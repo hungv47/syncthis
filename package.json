@@ -1,6 +1,6 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Keep your AI tools in sync. Cross-pollinate MCP server configs and skills across Claude Code, Cursor, Codex, and Gemini CLI. Install with mcpm or npx skills add; sync with this.",
   "type": "module",
   "license": "MIT",
