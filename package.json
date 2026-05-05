@@ -29,7 +29,7 @@
     "skills"
   ],
   "bin": {
-    "syncthis": "./bin/syncthis.ts"
+    "syncthis": "./bin/syncthis"
   },
   "files": [
     "bin",
@@ -43,7 +43,7 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "build": "bun build ./bin/syncthis.ts --compile --outfile dist/syncthis",
+    "build": "bun build ./bin/syncthis --compile --outfile dist/syncthis",
     "prepublishOnly": "bun test && bunx tsc --noEmit"
   },
   "publishConfig": {
