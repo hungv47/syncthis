@@ -29,7 +29,7 @@
     "skills"
   ],
   "bin": {
-    "syncthis": "./bin/syncthis.mjs"
+    "syncthis": "bin/syncthis.mjs"
   },
   "files": [
     "bin",
