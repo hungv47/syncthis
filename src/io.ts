@@ -57,7 +57,7 @@ async function writeRestrictive(path: string, content: string | Uint8Array) {
     if (!isNotFound(err)) throw err;
   }
   await writeFile(path, content, { mode: 0o600 });
-  if (preserved !== null) await chmod(path, preserved);
+  if (preserved !== null) await chmod(path, preserved & 0o600);
 }
 
 export async function backupIfExists(path: string) {
@@ -66,10 +66,10 @@ export async function backupIfExists(path: string) {
     throw new Error(`syncthis: refusing to write backup through a symlink: ${bakPath}`);
   }
   try {
-    await copyFile(path, bakPath, 1 /* COPYFILE_EXCL */);
+    await copyFile(path, bakPath);
+    await chmod(bakPath, 0o600);
   } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === "EEXIST" || code === "ENOENT") return;
+    if ((err as { code?: string }).code === "ENOENT") return;
     throw err;
   }
 }
