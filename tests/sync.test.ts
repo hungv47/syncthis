@@ -178,7 +178,7 @@ describe("codex adapter (TOML)", () => {
 
 describe("runSync (cross-pollinate)", () => {
   test("propagates server from one agent to all others", async () => {
-    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".claude.json", { gh: STDIO });
 
     const report = await runSync({ skipSkills: true });
     expect(Object.keys(report.union)).toEqual(["gh"]);
@@ -196,7 +196,7 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("merges union from multiple agents", async () => {
-    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".claude.json", { gh: STDIO });
     await writeAgentJson(".cursor/mcp.json", { lin: HTTP });
 
     const report = await runSync({ skipSkills: true });
@@ -209,14 +209,14 @@ describe("runSync (cross-pollinate)", () => {
   test("preserves conflict — leaves each agent's own version untouched", async () => {
     const v1: McpServer = { type: "stdio", command: "version-one" };
     const v2: McpServer = { type: "stdio", command: "version-two" };
-    await writeAgentJson(".claude/.mcp.json", { dup: v1, safe: STDIO });
+    await writeAgentJson(".claude.json", { dup: v1, safe: STDIO });
     await writeAgentJson(".cursor/mcp.json", { dup: v2 });
 
     const report = await runSync({ skipSkills: true });
     expect(report.conflicts).toHaveLength(1);
     expect(report.conflicts[0]!.name).toBe("dup");
 
-    const claude = JSON.parse(await Bun.file(join(workDir, ".claude", ".mcp.json")).text());
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
     expect(claude.mcpServers.dup).toEqual(v1);
     expect(claude.mcpServers.safe).toEqual(STDIO);
 
@@ -230,14 +230,14 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("idempotent — second sync is all unchanged", async () => {
-    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".claude.json", { gh: STDIO });
     await runSync({ skipSkills: true });
     const r2 = await runSync({ skipSkills: true });
     for (const w of r2.writes) expect(w.status).toBe("unchanged");
   });
 
   test("dry-run does not write to any agent", async () => {
-    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".claude.json", { gh: STDIO });
     const r = await runSync({ skipSkills: true, dryRun: true });
     expect(r.writes.every((w) => w.status === "synced" || w.status === "unchanged")).toBe(true);
     expect(r.writes.filter((w) => w.message === "dry-run")).not.toHaveLength(0);
@@ -253,7 +253,7 @@ describe("runSync (cross-pollinate)", () => {
   test("flags conflicts when only env values differ", async () => {
     const v1 = { type: "stdio" as const, command: "x", env: { TOK: "A" } };
     const v2 = { type: "stdio" as const, command: "x", env: { TOK: "B" } };
-    await writeAgentJson(".claude/.mcp.json", { gh: v1 });
+    await writeAgentJson(".claude.json", { gh: v1 });
     await writeAgentJson(".cursor/mcp.json", { gh: v2 });
     const r = await runSync({ skipSkills: true });
     expect(r.conflicts).toHaveLength(1);
@@ -262,15 +262,14 @@ describe("runSync (cross-pollinate)", () => {
 
   test("preserves type:sse round-trip through codex", async () => {
     const sse: McpServer = { type: "sse", url: "https://example.com/sse" };
-    await writeAgentJson(".claude/.mcp.json", { stream: sse });
+    await writeAgentJson(".claude.json", { stream: sse });
     await runSync({ skipSkills: true });
     const r2 = await runSync({ skipSkills: true });
     expect(r2.conflicts).toEqual([]);
   });
 
   test("corrupt file in one agent doesn't kill whole sync", async () => {
-    await mkdir(join(workDir, ".claude"), { recursive: true });
-    await Bun.write(join(workDir, ".claude", ".mcp.json"), "{not valid json");
+    await Bun.write(join(workDir, ".claude.json"), "{not valid json");
     await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
     const r = await runSync({ skipSkills: true });
     const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
@@ -282,7 +281,7 @@ describe("runSync (cross-pollinate)", () => {
 
 describe("runDoctor", () => {
   test("reports coverage per server", async () => {
-    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".claude.json", { gh: STDIO });
     await writeAgentJson(".cursor/mcp.json", { gh: STDIO, lin: HTTP });
 
     const r = await runDoctor();
@@ -294,7 +293,7 @@ describe("runDoctor", () => {
   test("reports conflicts", async () => {
     const v1: McpServer = { type: "stdio", command: "a" };
     const v2: McpServer = { type: "stdio", command: "b" };
-    await writeAgentJson(".claude/.mcp.json", { dup: v1 });
+    await writeAgentJson(".claude.json", { dup: v1 });
     await writeAgentJson(".cursor/mcp.json", { dup: v2 });
 
     const r = await runDoctor();

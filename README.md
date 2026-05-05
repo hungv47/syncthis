@@ -36,7 +36,7 @@ That's it. No config file, no source-of-truth to maintain.
 ## What `syncthis sync` does
 
 1. **Reads** MCP servers from each agent's config:
-    - Claude Code  `~/.claude/.mcp.json`
+    - Claude Code  `~/.claude.json` (top-level `mcpServers` — the user-scope store written by `claude mcp add --scope user`)
     - Cursor  `~/.cursor/mcp.json`
     - Codex  `~/.codex/config.toml`
     - Gemini CLI  `~/.gemini/settings.json`
@@ -64,7 +64,7 @@ syncthis help
 ```
 $ syncthis sync
 read 3 server name(s) across 4 agent(s); 2 synced, 1 conflict(s)
-  ✓ claude-code   ~/.claude/.mcp.json
+  ✓ claude-code   ~/.claude.json
   ✓ cursor        ~/.cursor/mcp.json
   ✓ codex         ~/.codex/config.toml
   ✓ gemini-cli    ~/.gemini/settings.json
