@@ -1,7 +1,7 @@
 # dependencies (bun install)
 node_modules
 
-# output
+# build output
 out
 dist
 *.tgz
@@ -12,23 +12,26 @@ coverage
 
 # logs
 logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+*.log
 
-# dotenv environment variable files
+# dotenv
 .env
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*.local
 .env.local
 
 # caches
-.eslintcache
 .cache
 *.tsbuildinfo
 
-# IntelliJ based IDEs
+# IDE
 .idea
+.vscode
 
-# Finder (MacOS) folder config
+# macOS
 .DS_Store
+
+# syncthis backups (in case anyone runs the tool inside this repo)
+*.syncthis.bak
+
+# agent process artifacts (specs, plans, reports)
+.agents/

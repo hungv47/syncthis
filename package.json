@@ -1,18 +1,53 @@
 {
-  "name": "syncthis",
+  "name": "@hungv47/syncthis",
   "version": "0.1.0",
-  "description": "Install your AI tools once. Use them everywhere. MCP server config sync across Claude Code, Cursor, Codex, and Gemini CLI.",
+  "description": "Keep your AI tools in sync. Cross-pollinate MCP server configs and skills across Claude Code, Cursor, Codex, and Gemini CLI. Install with mcpm or npx skills add; sync with this.",
   "type": "module",
+  "license": "MIT",
+  "author": "Le Vinh Hung <levinhhungg@gmail.com>",
+  "homepage": "https://github.com/hungv47/syncthis#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hungv47/syncthis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hungv47/syncthis/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sync",
+    "claude",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini",
+    "ai-agents",
+    "ai-tools",
+    "cli",
+    "config-sync",
+    "skills"
+  ],
   "bin": {
     "syncthis": "./bin/syncthis.ts"
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "test": "bun test",
-    "build": "bun build ./bin/syncthis.ts --compile --outfile dist/syncthis"
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build ./bin/syncthis.ts --compile --outfile dist/syncthis",
+    "prepublishOnly": "bun test && bunx tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "smol-toml": "^1.3.1"
