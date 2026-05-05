@@ -1,0 +1,304 @@
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import * as TOML from "smol-toml";
+import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
+import { codexAdapter } from "../src/adapters/codex.ts";
+import { runSync, computeUnion } from "../src/sync.ts";
+import { runDoctor } from "../src/doctor.ts";
+import type { McpServer } from "../src/types.ts";
+
+const STDIO: McpServer = {
+  type: "stdio",
+  command: "npx",
+  args: ["-y", "@modelcontextprotocol/server-github"],
+  env: { GITHUB_TOKEN: "x" },
+};
+const HTTP: McpServer = { type: "http", url: "https://mcp.linear.app/sse" };
+
+let workDir: string;
+let originalHome: string | undefined;
+
+beforeEach(async () => {
+  workDir = await mkdtemp(join(tmpdir(), "syncthis-"));
+  originalHome = process.env.HOME;
+  process.env.HOME = workDir;
+});
+
+afterEach(async () => {
+  process.env.HOME = originalHome;
+  await rm(workDir, { recursive: true, force: true });
+});
+
+async function writeAgentJson(rel: string, mcpServers: Record<string, McpServer>, extras: Record<string, unknown> = {}) {
+  const path = join(workDir, rel);
+  await mkdir(join(path, ".."), { recursive: true });
+  await Bun.write(path, JSON.stringify({ ...extras, mcpServers }));
+}
+
+async function writeCodexToml(servers: Record<string, McpServer>, extras = "") {
+  const path = join(workDir, ".codex", "config.toml");
+  await mkdir(join(workDir, ".codex"), { recursive: true });
+  const blocks: string[] = [];
+  for (const [name, s] of Object.entries(servers)) {
+    if ("url" in s) blocks.push(`[mcp_servers.${name}]\nurl = "${s.url}"\n`);
+    else {
+      const args = s.args ? `args = ${JSON.stringify(s.args)}\n` : "";
+      blocks.push(`[mcp_servers.${name}]\ncommand = "${s.command}"\n${args}`);
+    }
+  }
+  await Bun.write(path, extras + blocks.join("\n"));
+}
+
+describe("computeUnion", () => {
+  test("merges servers from multiple agents", () => {
+    const reads = [
+      { agent: "claude-code" as const, path: "", exists: true, servers: { gh: STDIO } as Record<string, McpServer> },
+      { agent: "cursor" as const, path: "", exists: true, servers: { lin: HTTP } as Record<string, McpServer> },
+      { agent: "codex" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+      { agent: "gemini-cli" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+    ];
+    const { union, conflicts } = computeUnion(reads);
+    expect(Object.keys(union).sort()).toEqual(["gh", "lin"]);
+    expect(conflicts).toEqual([]);
+  });
+
+  test("flags conflicts when same name has different configs", () => {
+    const v1: McpServer = { type: "stdio", command: "a" };
+    const v2: McpServer = { type: "stdio", command: "b" };
+    const reads = [
+      { agent: "claude-code" as const, path: "", exists: true, servers: { dup: v1 } as Record<string, McpServer> },
+      { agent: "cursor" as const, path: "", exists: true, servers: { dup: v2 } as Record<string, McpServer> },
+      { agent: "codex" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+      { agent: "gemini-cli" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+    ];
+    const { union, conflicts } = computeUnion(reads);
+    expect(union).toEqual({});
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]!.name).toBe("dup");
+    expect(conflicts[0]!.versions.map((v) => v.agent).sort()).toEqual(["claude-code", "cursor"]);
+  });
+
+  test("treats key-order differences as same config (canonicalized)", () => {
+    const a: McpServer = { type: "stdio", command: "x", args: ["1"] };
+    const b: McpServer = { args: ["1"], command: "x", type: "stdio" };
+    const reads = [
+      { agent: "claude-code" as const, path: "", exists: true, servers: { same: a } as Record<string, McpServer> },
+      { agent: "cursor" as const, path: "", exists: true, servers: { same: b } as Record<string, McpServer> },
+      { agent: "codex" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+      { agent: "gemini-cli" as const, path: "", exists: true, servers: {} as Record<string, McpServer> },
+    ];
+    const { conflicts } = computeUnion(reads);
+    expect(conflicts).toEqual([]);
+  });
+});
+
+describe("json-mcp adapter", () => {
+  test("read returns empty servers when file missing", async () => {
+    const adapter = createJsonMcpAdapter({ id: "claude-code", path: join(workDir, "nope.json") });
+    const r = await adapter.read();
+    expect(r.exists).toBe(false);
+    expect(r.servers).toEqual({});
+  });
+
+  test("read returns servers from existing file", async () => {
+    const path = join(workDir, "config.json");
+    await Bun.write(path, JSON.stringify({ mcpServers: { gh: STDIO } }));
+    const adapter = createJsonMcpAdapter({ id: "cursor", path });
+    const r = await adapter.read();
+    expect(r.exists).toBe(true);
+    expect(r.servers).toEqual({ gh: STDIO });
+  });
+
+  test("write preserves non-mcpServers keys", async () => {
+    const path = join(workDir, "config.json");
+    await Bun.write(path, JSON.stringify({ security: { auth: { selectedType: "oauth" } } }));
+    const adapter = createJsonMcpAdapter({ id: "gemini-cli", path });
+    const result = await adapter.write({ gh: STDIO }, { dryRun: false });
+    expect(result.status).toBe("synced");
+    const written = JSON.parse(await Bun.file(path).text());
+    expect(written.security).toEqual({ auth: { selectedType: "oauth" } });
+    expect(written.mcpServers).toEqual({ gh: STDIO });
+  });
+
+  test("write returns 'unchanged' when content matches", async () => {
+    const path = join(workDir, "config.json");
+    const adapter = createJsonMcpAdapter({ id: "cursor", path });
+    await adapter.write({ gh: STDIO }, { dryRun: false });
+    const r2 = await adapter.write({ gh: STDIO }, { dryRun: false });
+    expect(r2.status).toBe("unchanged");
+  });
+
+  test("write dry-run does not write", async () => {
+    const path = join(workDir, "config.json");
+    const adapter = createJsonMcpAdapter({ id: "cursor", path });
+    const r = await adapter.write({ gh: STDIO }, { dryRun: true });
+    expect(r.status).toBe("synced");
+    expect(r.message).toBe("dry-run");
+    expect(await Bun.file(path).exists()).toBe(false);
+  });
+
+  test("write creates .syncthis.bak on first write", async () => {
+    const path = join(workDir, "config.json");
+    await Bun.write(path, JSON.stringify({ mcpServers: { old: { command: "x" } } }));
+    const adapter = createJsonMcpAdapter({ id: "cursor", path });
+    await adapter.write({ gh: STDIO }, { dryRun: false });
+    const bak = JSON.parse(await Bun.file(`${path}.syncthis.bak`).text());
+    expect(bak.mcpServers.old).toBeDefined();
+  });
+});
+
+describe("codex adapter (TOML)", () => {
+  test("read parses mcp_servers", async () => {
+    await writeCodexToml({ gh: STDIO, lin: HTTP });
+    const r = await codexAdapter.read();
+    expect(r.exists).toBe(true);
+    expect(Object.keys(r.servers).sort()).toEqual(["gh", "lin"]);
+    expect(r.servers.gh).toMatchObject({ type: "stdio", command: "npx" });
+    expect(r.servers.lin).toMatchObject({ type: "http", url: "https://mcp.linear.app/sse" });
+  });
+
+  test("write preserves non-mcp_servers sections", async () => {
+    await writeCodexToml({}, '[tui]\nstatus_line = ["a"]\n\n[projects."/x"]\ntrust_level = "trusted"\n\n');
+    await codexAdapter.write({ gh: STDIO }, { dryRun: false });
+    const text = await Bun.file(codexAdapter.targetPath()).text();
+    const parsed = TOML.parse(text) as Record<string, unknown>;
+    expect((parsed.tui as { status_line: string[] }).status_line).toEqual(["a"]);
+    expect(parsed.projects).toBeDefined();
+    expect((parsed.mcp_servers as Record<string, unknown>).gh).toBeDefined();
+  });
+
+  test("write returns 'unchanged' when content matches", async () => {
+    await codexAdapter.write({ gh: STDIO }, { dryRun: false });
+    const r = await codexAdapter.write({ gh: STDIO }, { dryRun: false });
+    expect(r.status).toBe("unchanged");
+  });
+});
+
+describe("runSync (cross-pollinate)", () => {
+  test("propagates server from one agent to all others", async () => {
+    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+
+    const report = await runSync({ skipSkills: true });
+    expect(Object.keys(report.union)).toEqual(["gh"]);
+    expect(report.conflicts).toEqual([]);
+
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers.gh).toEqual(STDIO);
+
+    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
+    expect(gemini.mcpServers.gh).toEqual(STDIO);
+
+    const codexText = await Bun.file(join(workDir, ".codex", "config.toml")).text();
+    const codex = TOML.parse(codexText) as Record<string, unknown>;
+    expect((codex.mcp_servers as Record<string, unknown>).gh).toBeDefined();
+  });
+
+  test("merges union from multiple agents", async () => {
+    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".cursor/mcp.json", { lin: HTTP });
+
+    const report = await runSync({ skipSkills: true });
+    expect(Object.keys(report.union).sort()).toEqual(["gh", "lin"]);
+
+    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
+    expect(gemini.mcpServers).toEqual({ gh: STDIO, lin: HTTP });
+  });
+
+  test("preserves conflict — leaves each agent's own version untouched", async () => {
+    const v1: McpServer = { type: "stdio", command: "version-one" };
+    const v2: McpServer = { type: "stdio", command: "version-two" };
+    await writeAgentJson(".claude/.mcp.json", { dup: v1, safe: STDIO });
+    await writeAgentJson(".cursor/mcp.json", { dup: v2 });
+
+    const report = await runSync({ skipSkills: true });
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.conflicts[0]!.name).toBe("dup");
+
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude", ".mcp.json")).text());
+    expect(claude.mcpServers.dup).toEqual(v1);
+    expect(claude.mcpServers.safe).toEqual(STDIO);
+
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers.dup).toEqual(v2);
+    expect(cursor.mcpServers.safe).toEqual(STDIO);
+
+    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
+    expect(gemini.mcpServers.dup).toBeUndefined();
+    expect(gemini.mcpServers.safe).toEqual(STDIO);
+  });
+
+  test("idempotent — second sync is all unchanged", async () => {
+    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await runSync({ skipSkills: true });
+    const r2 = await runSync({ skipSkills: true });
+    for (const w of r2.writes) expect(w.status).toBe("unchanged");
+  });
+
+  test("dry-run does not write to any agent", async () => {
+    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    const r = await runSync({ skipSkills: true, dryRun: true });
+    expect(r.writes.every((w) => w.status === "synced" || w.status === "unchanged")).toBe(true);
+    expect(r.writes.filter((w) => w.message === "dry-run")).not.toHaveLength(0);
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
+  });
+
+  test("with empty agents the sync is a no-op", async () => {
+    const r = await runSync({ skipSkills: true });
+    expect(r.union).toEqual({});
+    expect(r.conflicts).toEqual([]);
+  });
+
+  test("flags conflicts when only env values differ", async () => {
+    const v1 = { type: "stdio" as const, command: "x", env: { TOK: "A" } };
+    const v2 = { type: "stdio" as const, command: "x", env: { TOK: "B" } };
+    await writeAgentJson(".claude/.mcp.json", { gh: v1 });
+    await writeAgentJson(".cursor/mcp.json", { gh: v2 });
+    const r = await runSync({ skipSkills: true });
+    expect(r.conflicts).toHaveLength(1);
+    expect(r.conflicts[0]!.name).toBe("gh");
+  });
+
+  test("preserves type:sse round-trip through codex", async () => {
+    const sse: McpServer = { type: "sse", url: "https://example.com/sse" };
+    await writeAgentJson(".claude/.mcp.json", { stream: sse });
+    await runSync({ skipSkills: true });
+    const r2 = await runSync({ skipSkills: true });
+    expect(r2.conflicts).toEqual([]);
+  });
+
+  test("corrupt file in one agent doesn't kill whole sync", async () => {
+    await mkdir(join(workDir, ".claude"), { recursive: true });
+    await Bun.write(join(workDir, ".claude", ".mcp.json"), "{not valid json");
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    const r = await runSync({ skipSkills: true });
+    const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
+    expect(claudeWrite.status).toBe("failed");
+    const cursorWrite = r.writes.find((w) => w.agent === "cursor")!;
+    expect(["synced", "unchanged"]).toContain(cursorWrite.status);
+  });
+});
+
+describe("runDoctor", () => {
+  test("reports coverage per server", async () => {
+    await writeAgentJson(".claude/.mcp.json", { gh: STDIO });
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO, lin: HTTP });
+
+    const r = await runDoctor();
+    expect(r.coverage.find((c) => c.name === "gh")?.present.sort()).toEqual(["claude-code", "cursor"]);
+    expect(r.coverage.find((c) => c.name === "gh")?.missing.sort()).toEqual(["codex", "gemini-cli"]);
+    expect(r.coverage.find((c) => c.name === "lin")?.present).toEqual(["cursor"]);
+  });
+
+  test("reports conflicts", async () => {
+    const v1: McpServer = { type: "stdio", command: "a" };
+    const v2: McpServer = { type: "stdio", command: "b" };
+    await writeAgentJson(".claude/.mcp.json", { dup: v1 });
+    await writeAgentJson(".cursor/mcp.json", { dup: v2 });
+
+    const r = await runDoctor();
+    expect(r.conflicts).toHaveLength(1);
+    expect(r.conflicts[0]!.name).toBe("dup");
+  });
+});
