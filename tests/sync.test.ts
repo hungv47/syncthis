@@ -24,6 +24,9 @@ beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-"));
   originalHome = process.env.HOME;
   process.env.HOME = workDir;
+  // Clear adapter env vars so they don't redirect adapter paths during tests.
+  delete process.env.COPILOT_HOME;
+  delete process.env.OPENCLAW_CONFIG_PATH;
 });
 
 afterEach(async () => {
@@ -264,8 +267,11 @@ describe("runSync (cross-pollinate)", () => {
     const sse: McpServer = { type: "sse", url: "https://example.com/sse" };
     await writeAgentJson(".claude.json", { stream: sse });
     await runSync({ skipSkills: true });
-    const r2 = await runSync({ skipSkills: true });
-    expect(r2.conflicts).toEqual([]);
+    // Codex's TOML adapter explicitly preserves the sse type field on round-trip.
+    // Agents that can't represent sse (windsurf, copilot, hermes) will downcast to http,
+    // which is expected — the conflict policy handles that gracefully.
+    const codexRead = await codexAdapter.read();
+    expect(codexRead.servers.stream).toMatchObject({ type: "sse", url: "https://example.com/sse" });
   });
 
   test("corrupt file in one agent doesn't kill whole sync", async () => {
@@ -286,7 +292,17 @@ describe("runDoctor", () => {
 
     const r = await runDoctor();
     expect(r.coverage.find((c) => c.name === "gh")?.present.sort()).toEqual(["claude-code", "cursor"]);
-    expect(r.coverage.find((c) => c.name === "gh")?.missing.sort()).toEqual(["codex", "gemini-cli"]);
+    expect(r.coverage.find((c) => c.name === "gh")?.missing.sort()).toEqual([
+      "antigravity",
+      "codex",
+      "gemini-cli",
+      "github-copilot",
+      "hermes-agent",
+      "kimi-cli",
+      "openclaw",
+      "opencode",
+      "windsurf",
+    ]);
     expect(r.coverage.find((c) => c.name === "lin")?.present).toEqual(["cursor"]);
   });
 
@@ -299,5 +315,70 @@ describe("runDoctor", () => {
     const r = await runDoctor();
     expect(r.conflicts).toHaveLength(1);
     expect(r.conflicts[0]!.name).toBe("dup");
+  });
+});
+
+describe("claude per-project scope merge", () => {
+  test("read merges top-level + projects.*.mcpServers", async () => {
+    const claudePath = join(workDir, ".claude.json");
+    await Bun.write(
+      claudePath,
+      JSON.stringify({
+        mcpServers: { topLevel: STDIO },
+        projects: {
+          "/Users/me": { mcpServers: { perProject: HTTP } },
+          "/tmp/other": { mcpServers: { another: STDIO } },
+        },
+      }),
+    );
+    const { claudeAdapter } = await import("../src/adapters/claude.ts");
+    const r = await claudeAdapter.read();
+    expect(r.exists).toBe(true);
+    expect(Object.keys(r.servers).sort()).toEqual(["another", "perProject", "topLevel"]);
+    expect(r.servers.topLevel).toEqual(STDIO);
+    expect(r.servers.perProject).toEqual(HTTP);
+  });
+
+  test("top-level wins on name collision with project scope", async () => {
+    const topVersion: McpServer = { type: "stdio", command: "top" };
+    const projVersion: McpServer = { type: "stdio", command: "proj" };
+    const claudePath = join(workDir, ".claude.json");
+    await Bun.write(
+      claudePath,
+      JSON.stringify({
+        mcpServers: { dup: topVersion },
+        projects: { "/x": { mcpServers: { dup: projVersion } } },
+      }),
+    );
+    const { claudeAdapter } = await import("../src/adapters/claude.ts");
+    const r = await claudeAdapter.read();
+    expect(r.servers.dup).toEqual(topVersion);
+  });
+
+  test("write goes to top-level, leaves project scopes untouched", async () => {
+    const claudePath = join(workDir, ".claude.json");
+    await Bun.write(
+      claudePath,
+      JSON.stringify({
+        mcpServers: {},
+        projects: { "/x": { mcpServers: { perProject: HTTP }, trustLevel: "trusted" } },
+      }),
+    );
+    const { claudeAdapter } = await import("../src/adapters/claude.ts");
+    await claudeAdapter.write({ promoted: STDIO, perProject: HTTP }, { dryRun: false });
+    const data = JSON.parse(await Bun.file(claudePath).text());
+    expect(data.mcpServers).toEqual({ promoted: STDIO, perProject: HTTP });
+    expect(data.projects["/x"].mcpServers).toEqual({ perProject: HTTP });
+    expect(data.projects["/x"].trustLevel).toBe("trusted");
+  });
+
+  test("runSync surfaces per-project Claude servers to other agents", async () => {
+    await writeAgentJson(".claude.json", {}, {
+      projects: { "/Users/me": { mcpServers: { stuck: STDIO } } },
+    });
+    const r = await runSync({ skipSkills: true });
+    expect(Object.keys(r.union)).toEqual(["stuck"]);
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers.stuck).toEqual(STDIO);
   });
 });

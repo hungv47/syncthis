@@ -65,6 +65,14 @@ export async function backupIfExists(path: string) {
   if (await isSymlink(bakPath)) {
     throw new Error(`syncthis: refusing to write backup through a symlink: ${bakPath}`);
   }
+  // Sacred element §2: backup on FIRST write. If a bak already exists, preserve it —
+  // never rotate the user's original out of existence on subsequent writes.
+  try {
+    await stat(bakPath);
+    return;
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
   try {
     await copyFile(path, bakPath);
     await chmod(bakPath, 0o600);
@@ -78,6 +86,25 @@ export function expandHome(path: string): string {
   if (path !== "~" && !path.startsWith("~/")) return path;
   const home = process.env.HOME ?? homedir();
   return path.replace(/^~/, home);
+}
+
+// For env-var-overridable adapter paths ($COPILOT_HOME, $OPENCLAW_CONFIG_PATH, etc.):
+// expand `~` if present and assert the resolved path is anchored under $HOME so a malicious
+// or accidentally-set env var can't redirect syncthis writes to arbitrary filesystem locations.
+export function resolveUnderHome(p: string, varName: string): string {
+  const home = process.env.HOME ?? homedir();
+  const expanded = expandHome(p);
+  // Resolve to absolute. If `expanded` is relative, treat it as relative to $HOME.
+  const abs = expanded.startsWith("/") ? expanded : `${home}/${expanded}`;
+  // Reject paths containing `..` segments after resolution (defense-in-depth — Node's path.resolve
+  // would normalize these but we want to refuse them outright as a signal of misuse).
+  if (abs.split("/").includes("..")) {
+    throw new Error(`syncthis: ${varName} must not contain '..' segments: ${p}`);
+  }
+  if (abs !== home && !abs.startsWith(`${home}/`)) {
+    throw new Error(`syncthis: ${varName} must resolve under $HOME, got ${abs}`);
+  }
+  return abs;
 }
 
 function isNotFound(err: unknown): boolean {

@@ -14,7 +14,18 @@ export type HttpServer = {
 
 export type McpServer = StdioServer | HttpServer;
 
-export type AgentId = "claude-code" | "cursor" | "codex" | "gemini-cli";
+export type AgentId =
+  | "claude-code"
+  | "cursor"
+  | "codex"
+  | "gemini-cli"
+  | "kimi-cli"
+  | "antigravity"
+  | "github-copilot"
+  | "windsurf"
+  | "opencode"
+  | "openclaw"
+  | "hermes-agent";
 
 export type SyncStatus = "synced" | "unchanged" | "skipped" | "failed";
 export type DoctorStatus = "ok" | "drift" | "missing" | "invalid";

@@ -1,11 +1,26 @@
 import { spawn } from "bun";
 import { adapters } from "./adapters/index.ts";
-import { syncSkills, type SkillSyncReport } from "./skills.ts";
-import type { AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
+import type { Adapter, AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
 
 type SyncOptions = {
   dryRun?: boolean;
   skipSkills?: boolean;
+};
+
+export type DirectionalDiff = {
+  add: string[];
+  overwrite: string[];
+  remove: string[];
+};
+
+export type DirectionalReport = {
+  from: AgentId;
+  to: AgentId;
+  fromRead: AdapterRead;
+  toRead: AdapterRead;
+  diff: DirectionalDiff;
+  applied: boolean;
+  write?: AdapterWriteResult;
 };
 
 export type Conflict = {
@@ -19,11 +34,26 @@ export type SyncReport = {
   conflicts: Conflict[];
   writes: AdapterWriteResult[];
   skills?: { ran: boolean; ok: boolean; message?: string };
-  skillPropagation?: SkillSyncReport;
 };
 
 function canonical(s: McpServer): string {
-  return JSON.stringify(sortKeys(s));
+  return JSON.stringify(sortKeys(normalizeServer(s)));
+}
+
+// Adapters differ in how they preserve empty containers — OpenCode drops `args: []` on round-trip
+// while canonical-schema adapters keep it. Normalize both shapes to the same canonical form so the
+// conflict detector doesn't fire on cosmetic differences.
+function normalizeServer(s: McpServer): McpServer {
+  if ("url" in s) {
+    const out: Extract<McpServer, { url: string }> = { type: s.type ?? "http", url: s.url };
+    if (s.headers && Object.keys(s.headers).length > 0) out.headers = s.headers;
+    return out;
+  }
+  const out: Extract<McpServer, { command: string }> = { type: s.type ?? "stdio", command: s.command };
+  if (s.args && s.args.length > 0) out.args = s.args;
+  if (s.env && Object.keys(s.env).length > 0) out.env = s.env;
+  if (s.cwd) out.cwd = s.cwd;
+  return out;
 }
 
 function sortKeys(v: unknown): unknown {
@@ -87,11 +117,61 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
     ? { ran: false, ok: true, message: skipReason }
     : await runSkillsUpdate();
 
-  if (!opts.skipSkills) {
-    report.skillPropagation = await syncSkills({ dryRun });
+  return report;
+}
+
+export function findAdapter(id: AgentId): Adapter | undefined {
+  return adapters.find((a) => a.id === id);
+}
+
+export function listAgentIds(): AgentId[] {
+  return adapters.map((a) => a.id);
+}
+
+export function diffServers(
+  from: Record<string, McpServer>,
+  to: Record<string, McpServer>,
+): DirectionalDiff {
+  const add: string[] = [];
+  const overwrite: string[] = [];
+  const remove: string[] = [];
+  for (const [name, server] of Object.entries(from)) {
+    if (!(name in to)) add.push(name);
+    else if (canonical(server) !== canonical(to[name]!)) overwrite.push(name);
+  }
+  for (const name of Object.keys(to)) {
+    if (!(name in from)) remove.push(name);
+  }
+  return { add: add.sort(), overwrite: overwrite.sort(), remove: remove.sort() };
+}
+
+type DirectionalOptions = {
+  from: AgentId;
+  to: AgentId;
+  dryRun?: boolean;
+  apply: boolean;
+};
+
+export async function runDirectional(opts: DirectionalOptions): Promise<DirectionalReport> {
+  const fromAdapter = findAdapter(opts.from);
+  const toAdapter = findAdapter(opts.to);
+  if (!fromAdapter) throw new Error(`syncthis: unknown agent: ${opts.from}`);
+  if (!toAdapter) throw new Error(`syncthis: unknown agent: ${opts.to}`);
+  if (opts.from === opts.to) throw new Error(`syncthis: from and to must differ`);
+
+  const [fromRead, toRead] = await Promise.all([fromAdapter.read(), toAdapter.read()]);
+  const diff = diffServers(fromRead.servers, toRead.servers);
+
+  if (!opts.apply || opts.dryRun) {
+    return { from: opts.from, to: opts.to, fromRead, toRead, diff, applied: false };
   }
 
-  return report;
+  const write = await toAdapter.write(fromRead.servers, { dryRun: false });
+  return { from: opts.from, to: opts.to, fromRead, toRead, diff, applied: true, write };
+}
+
+export async function runSkillsOnly(): Promise<NonNullable<SyncReport["skills"]>> {
+  return runSkillsUpdate();
 }
 
 async function runSkillsUpdate(): Promise<NonNullable<SyncReport["skills"]>> {
