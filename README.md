@@ -17,7 +17,9 @@ A sync layer for MCP servers and skills across Claude Code, Cursor, Codex, and G
 ## Install
 
 ```bash
-bun install -g syncthis
+bun install -g @hungv47/syncthis
+# or
+npm install -g @hungv47/syncthis
 ```
 
 ## How it works
