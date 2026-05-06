@@ -260,14 +260,16 @@ function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
 }
 
 async function main() {
-  const { showWelcomeIfFirstRun, showInteractivePicker } = await import("../src/tui.ts");
-  await showWelcomeIfFirstRun();
-
   const [, , cmd, ...rest] = process.argv;
 
-  // No command: open the picker (or HELP if non-TTY).
+  // No command: render the ink welcome, then open the picker (or HELP if non-TTY).
   if (!cmd) {
-    if (process.stdin.isTTY && process.stdout.isTTY) return showInteractivePicker();
+    const { renderWelcome } = await import("../src/welcome.tsx");
+    await renderWelcome();
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      const { showInteractivePicker } = await import("../src/tui.ts");
+      return showInteractivePicker();
+    }
     return console.log(HELP);
   }
 

@@ -1,34 +1,7 @@
 import { intro, outro, select, isCancel, cancel } from "@clack/prompts";
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
-import { expandHome, readJson, writeText } from "./io.ts";
 import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import type { AgentId } from "./types.ts";
-
-const MARKER_PATH = "~/.syncthis/seen.json";
-
-const COLOR = process.stdout.isTTY && !process.env.NO_COLOR;
-const dim = (s: string) => (COLOR ? `\x1b[2m${s}\x1b[0m` : s);
-
-export async function showWelcomeIfFirstRun(): Promise<void> {
-  const path = expandHome(MARKER_PATH);
-  const seen = await readJson<{ version?: string }>(path);
-  if (seen !== null) return;
-
-  console.log("");
-  console.log(`  ${"syncthis 0.2"} — keep your AI coding agents in sync`);
-  console.log("");
-  console.log(dim("  • MCP servers: synced across 11 agents (Claude, Cursor, Codex, Gemini,"));
-  console.log(dim("    Kimi, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, Copilot)"));
-  console.log(dim("  • Skills: delegated to `npx skills` (55 agents)"));
-  console.log("");
-  console.log(dim("  Run `syncthis` with no args to open the menu, or `syncthis help`."));
-  console.log("");
-
-  await mkdir(dirname(path), { recursive: true });
-  await writeText(path, JSON.stringify({ version: "0.2.0", firstRunAt: new Date().toISOString() }, null, 2) + "\n");
-}
 
 type PickerChoice = "sync" | "mcp" | "skills" | "directional" | "doctor" | "quit";
 
