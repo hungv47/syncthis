@@ -65,7 +65,13 @@ export async function showInteractivePicker(): Promise<void> {
     if (isCancel(toRaw)) return cancel("aborted.");
     const to = toRaw as AgentId;
 
-    const preview = await runDirectional({ from, to, apply: false });
+    let preview: Awaited<ReturnType<typeof runDirectional>>;
+    try {
+      preview = await runDirectional({ from, to, apply: false });
+    } catch (err) {
+      cancel(err instanceof Error ? err.message : String(err));
+      return;
+    }
     console.log(`\n  diff: +${preview.diff.add.length}  ~${preview.diff.overwrite.length}  -${preview.diff.remove.length}`);
 
     const confirm = await select({
@@ -77,7 +83,12 @@ export async function showInteractivePicker(): Promise<void> {
     });
     if (isCancel(confirm) || confirm === "no") return cancel("aborted.");
 
-    await runDirectional({ from, to, apply: true });
+    try {
+      await runDirectional({ from, to, apply: true });
+    } catch (err) {
+      cancel(err instanceof Error ? err.message : String(err));
+      return;
+    }
     outro("done.");
   }
 }

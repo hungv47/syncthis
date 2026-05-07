@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import * as TOML from "smol-toml";
 import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
-import { runSync, computeUnion } from "../src/sync.ts";
+import { runSync, computeUnion, runDirectional } from "../src/sync.ts";
 import { runDoctor } from "../src/doctor.ts";
 import type { McpServer } from "../src/types.ts";
 
@@ -251,6 +251,18 @@ describe("runSync (cross-pollinate)", () => {
     const r = await runSync({ skipSkills: true });
     expect(r.union).toEqual({});
     expect(r.conflicts).toEqual([]);
+    expect(r.writes.every((w) => w.status === "skipped")).toBe(true);
+    expect(await Bun.file(join(workDir, ".claude.json")).exists()).toBe(false);
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
+    expect(await Bun.file(join(workDir, ".codex", "config.toml")).exists()).toBe(false);
+  });
+
+  test("empty sync does not add mcp containers to existing non-mcp configs", async () => {
+    await Bun.write(join(workDir, ".claude.json"), JSON.stringify({ projects: {} }));
+    const r = await runSync({ skipSkills: true });
+    const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
+    expect(claudeWrite.status).toBe("skipped");
+    expect(JSON.parse(await Bun.file(join(workDir, ".claude.json")).text())).toEqual({ projects: {} });
   });
 
   test("flags conflicts when only env values differ", async () => {
@@ -282,6 +294,18 @@ describe("runSync (cross-pollinate)", () => {
     expect(claudeWrite.status).toBe("failed");
     const cursorWrite = r.writes.find((w) => w.agent === "cursor")!;
     expect(["synced", "unchanged"]).toContain(cursorWrite.status);
+  });
+
+  test("directional sync refuses to apply when source cannot be read", async () => {
+    await Bun.write(join(workDir, ".claude.json"), "{not valid json");
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+
+    await expect(
+      runDirectional({ from: "claude-code", to: "cursor", apply: true }),
+    ).rejects.toThrow(/cannot read source claude-code/);
+
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers.gh).toEqual(STDIO);
   });
 });
 

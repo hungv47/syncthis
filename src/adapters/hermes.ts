@@ -6,7 +6,6 @@ const TARGET = "~/.hermes/config.yaml";
 
 // Hermes stores config as YAML at top-level key `mcp_servers` (snake_case).
 // js-yaml drops comments on write, matching upstream Hermes (PyYAML safe_dump) behavior.
-// Round-trip drops `timeout` / `connect_timeout` — TODO: preserve in v0.3.
 type HermesStdio = {
   command: string;
   args?: string[];
@@ -42,17 +41,31 @@ function fromHermes(raw: HermesShape["mcp_servers"]): Record<string, McpServer> 
   return out;
 }
 
-function toHermes(servers: Record<string, McpServer>): Record<string, HermesEntry> {
+function toHermes(
+  servers: Record<string, McpServer>,
+  previous: HermesShape["mcp_servers"] = {},
+): Record<string, HermesEntry> {
   const out: Record<string, HermesEntry> = {};
   for (const [name, s] of Object.entries(servers)) {
     if ("url" in s) {
-      const entry: HermesHttp = { url: s.url };
+      const prior = previous?.[name];
+      const entry: HermesHttp = {
+        ...(prior && "url" in prior ? prior : {}),
+        url: s.url,
+      };
       if (s.headers) entry.headers = s.headers;
+      else delete entry.headers;
       out[name] = entry;
     } else {
-      const entry: HermesStdio = { command: s.command };
+      const prior = previous?.[name];
+      const entry: HermesStdio = {
+        ...(prior && "command" in prior ? prior : {}),
+        command: s.command,
+      };
       if (s.args) entry.args = s.args;
+      else delete entry.args;
       if (s.env) entry.env = s.env;
+      else delete entry.env;
       out[name] = entry;
     }
   }
@@ -91,7 +104,7 @@ export const hermesAdapter: Adapter = {
     } catch (err) {
       return { agent: "hermes-agent", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
     }
-    const next: HermesShape = { ...existing, mcp_servers: toHermes(servers) };
+    const next: HermesShape = { ...existing, mcp_servers: toHermes(servers, existing.mcp_servers) };
     const nextText = yaml.dump(next, { lineWidth: -1, noRefs: true });
     const currentText = (await readText(path)) ?? "";
     if (currentText === nextText) return { agent: "hermes-agent", path, status: "unchanged" };

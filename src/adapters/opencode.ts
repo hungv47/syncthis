@@ -8,7 +8,6 @@ const TARGET = "~/.config/opencode/opencode.json";
 //   - type-tagged: "local" for stdio, "remote" for HTTP
 //   - stdio's `command` is a SINGLE ARRAY (not separate command + args)
 //   - env field is `environment` (not env)
-// Round-trip drops `enabled` / `oauth` flags — TODO: preserve in v0.3.
 type OpenCodeLocal = {
   type: "local";
   command: string[];
@@ -48,16 +47,31 @@ function fromOpenCode(raw: OpenCodeShape["mcp"]): Record<string, McpServer> {
   return out;
 }
 
-function toOpenCode(servers: Record<string, McpServer>): Record<string, OpenCodeEntry> {
+function toOpenCode(
+  servers: Record<string, McpServer>,
+  previous: OpenCodeShape["mcp"] = {},
+): Record<string, OpenCodeEntry> {
   const out: Record<string, OpenCodeEntry> = {};
   for (const [name, s] of Object.entries(servers)) {
     if ("url" in s) {
-      const entry: OpenCodeRemote = { type: "remote", url: s.url };
+      const prior = previous?.[name];
+      const entry: OpenCodeRemote = {
+        ...(prior?.type === "remote" ? prior : {}),
+        type: "remote",
+        url: s.url,
+      };
       if (s.headers) entry.headers = s.headers;
+      else delete entry.headers;
       out[name] = entry;
     } else {
-      const entry: OpenCodeLocal = { type: "local", command: [s.command, ...(s.args ?? [])] };
+      const prior = previous?.[name];
+      const entry: OpenCodeLocal = {
+        ...(prior?.type === "local" ? prior : {}),
+        type: "local",
+        command: [s.command, ...(s.args ?? [])],
+      };
       if (s.env) entry.environment = s.env;
+      else delete entry.environment;
       out[name] = entry;
     }
   }
@@ -87,7 +101,7 @@ export const opencodeAdapter: Adapter = {
     } catch (err) {
       return { agent: "opencode", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
     }
-    const next: OpenCodeShape = { ...existing, mcp: toOpenCode(servers) };
+    const next: OpenCodeShape = { ...existing, mcp: toOpenCode(servers, existing.mcp) };
     if (JSON.stringify(existing) === JSON.stringify(next)) {
       return { agent: "opencode", path, status: "unchanged" };
     }

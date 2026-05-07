@@ -4,19 +4,20 @@ import { expandHome, readJson, resolveUnderHome, writeJson } from "../io.ts";
 const DEFAULT_TARGET = "~/.copilot/mcp-config.json";
 
 // Copilot CLI uses type-tagged JSON: {type: "local"|"http", ...}.
-// Round-trip drops Copilot-specific fields like `tools` and `enabled` — TODO: preserve in v0.3.
 type CopilotStdio = {
   type: "local";
   command: string;
   args?: string[];
   env?: Record<string, string>;
   tools?: string[];
+  enabled?: boolean;
 };
 type CopilotHttp = {
   type: "http";
   url: string;
   headers?: Record<string, string>;
   tools?: string[];
+  enabled?: boolean;
 };
 type CopilotEntry = CopilotStdio | CopilotHttp;
 type CopilotShape = { mcpServers?: Record<string, CopilotEntry> } & Record<string, unknown>;
@@ -48,17 +49,33 @@ function fromCopilot(raw: CopilotShape["mcpServers"]): Record<string, McpServer>
   return out;
 }
 
-function toCopilot(servers: Record<string, McpServer>): Record<string, CopilotEntry> {
+function toCopilot(
+  servers: Record<string, McpServer>,
+  previous: CopilotShape["mcpServers"] = {},
+): Record<string, CopilotEntry> {
   const out: Record<string, CopilotEntry> = {};
   for (const [name, s] of Object.entries(servers)) {
     if ("url" in s) {
-      const entry: CopilotHttp = { type: "http", url: s.url };
+      const prior = previous?.[name];
+      const entry: CopilotHttp = {
+        ...(prior?.type === "http" ? prior : {}),
+        type: "http",
+        url: s.url,
+      };
       if (s.headers) entry.headers = s.headers;
+      else delete entry.headers;
       out[name] = entry;
     } else {
-      const entry: CopilotStdio = { type: "local", command: s.command };
+      const prior = previous?.[name];
+      const entry: CopilotStdio = {
+        ...(prior?.type === "local" ? prior : {}),
+        type: "local",
+        command: s.command,
+      };
       if (s.args) entry.args = s.args;
+      else delete entry.args;
       if (s.env) entry.env = s.env;
+      else delete entry.env;
       out[name] = entry;
     }
   }
@@ -88,7 +105,7 @@ export const copilotAdapter: Adapter = {
     } catch (err) {
       return { agent: "github-copilot", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
     }
-    const next: CopilotShape = { ...existing, mcpServers: toCopilot(servers) };
+    const next: CopilotShape = { ...existing, mcpServers: toCopilot(servers, existing.mcpServers) };
     if (JSON.stringify(existing) === JSON.stringify(next)) {
       return { agent: "github-copilot", path, status: "unchanged" };
     }

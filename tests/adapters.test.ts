@@ -84,6 +84,27 @@ describe("copilot adapter", () => {
     expect(data.mcpServers.lin.type).toBe("http");
     expect(await roundTrip(copilotAdapter, HTTP, "lin")).toEqual(HTTP);
   });
+  test("preserves Copilot-specific fields on existing servers", async () => {
+    const path = copilotAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(
+      path,
+      JSON.stringify({
+        mcpServers: {
+          gh: { type: "local", command: "old", tools: ["search"], enabled: false },
+          lin: { type: "http", url: "https://old.example", tools: ["issues"], enabled: true },
+        },
+      }),
+    );
+    await copilotAdapter.write({ gh: STDIO, lin: HTTP }, { dryRun: false });
+    const data = JSON.parse(await Bun.file(path).text());
+    expect(data.mcpServers.gh.tools).toEqual(["search"]);
+    expect(data.mcpServers.gh.enabled).toBe(false);
+    expect(data.mcpServers.gh.command).toBe(STDIO.command);
+    expect(data.mcpServers.lin.tools).toEqual(["issues"]);
+    expect(data.mcpServers.lin.enabled).toBe(true);
+    expect(data.mcpServers.lin.url).toBe(HTTP.url);
+  });
   test("$COPILOT_HOME under $HOME is honored", async () => {
     process.env.COPILOT_HOME = `${workDir}/custom-copilot`;
     expect(copilotAdapter.targetPath()).toBe(`${workDir}/custom-copilot/mcp-config.json`);
@@ -136,6 +157,26 @@ describe("opencode adapter", () => {
     expect(data.theme).toBe("dark");
     expect(data.mcp.gh).toBeDefined();
   });
+  test("preserves OpenCode-specific fields on existing servers", async () => {
+    const path = opencodeAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(
+      path,
+      JSON.stringify({
+        mcp: {
+          gh: { type: "local", command: ["old"], enabled: false },
+          lin: { type: "remote", url: "https://old.example", oauth: true, enabled: true },
+        },
+      }),
+    );
+    await opencodeAdapter.write({ gh: STDIO, lin: HTTP }, { dryRun: false });
+    const data = JSON.parse(await Bun.file(path).text());
+    expect(data.mcp.gh.enabled).toBe(false);
+    expect(data.mcp.gh.command).toEqual(["npx", "-y", "@modelcontextprotocol/server-github"]);
+    expect(data.mcp.lin.oauth).toBe(true);
+    expect(data.mcp.lin.enabled).toBe(true);
+    expect(data.mcp.lin.url).toBe(HTTP.url);
+  });
 });
 
 describe("openclaw adapter", () => {
@@ -172,6 +213,27 @@ describe("openclaw adapter", () => {
     expect(data.skills.extraDirs).toEqual(["~/skills"]);
     expect(r.servers.gh).toEqual(STDIO);
   });
+  test("preserves OpenClaw server-specific fields", async () => {
+    const path = openclawAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(
+      path,
+      JSON.stringify({
+        mcp: {
+          servers: {
+            gh: { command: "old", timeout: 30 },
+            s: { url: "https://old.example", transport: "sse", timeout: 45 },
+          },
+        },
+      }),
+    );
+    await openclawAdapter.write({ gh: STDIO, s: { type: "sse", url: "https://example.com/sse" } }, { dryRun: false });
+    const data = JSON5.parse(await Bun.file(path).text());
+    expect(data.mcp.servers.gh.timeout).toBe(30);
+    expect(data.mcp.servers.gh.command).toBe(STDIO.command);
+    expect(data.mcp.servers.s.timeout).toBe(45);
+    expect(data.mcp.servers.s.transport).toBe("sse");
+  });
 });
 
 describe("hermes adapter", () => {
@@ -195,6 +257,20 @@ describe("hermes adapter", () => {
     const text = await Bun.file(path).text();
     expect(text).toContain("gateway:");
     expect(text).toContain("port: 8080");
+  });
+  test("preserves Hermes timeout fields on existing servers", async () => {
+    const path = hermesAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(
+      path,
+      "mcp_servers:\n  gh:\n    command: old\n    timeout: 30\n    connect_timeout: 5\n  lin:\n    url: https://old.example\n    timeout: 45\n",
+    );
+    await hermesAdapter.write({ gh: STDIO, lin: HTTP }, { dryRun: false });
+    const text = await Bun.file(path).text();
+    expect(text).toContain("timeout: 30");
+    expect(text).toContain("connect_timeout: 5");
+    expect(text).toContain("timeout: 45");
+    expect(await roundTrip(hermesAdapter, STDIO)).toEqual(STDIO);
   });
 });
 

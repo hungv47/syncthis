@@ -2,6 +2,8 @@ import { spawn } from "bun";
 import { adapters } from "./adapters/index.ts";
 import type { Adapter, AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
 
+const SKILLS_UPDATE_TIMEOUT_MS = 120_000;
+
 type SyncOptions = {
   dryRun?: boolean;
   skipSkills?: boolean;
@@ -98,13 +100,23 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
   const reads = await Promise.all(adapters.map((a) => a.read()));
   const { union, conflicts } = computeUnion(reads);
   const conflictNames = new Set(conflicts.map((c) => c.name));
+  const readsByAgent = new Map(reads.map((r) => [r.agent, r]));
 
   const writes = await Promise.all(
     adapters.map((a) => {
-      const own = reads.find((r) => r.agent === a.id)!.servers;
+      const read = readsByAgent.get(a.id)!;
+      const own = read.servers;
       const final: Record<string, McpServer> = { ...union };
       for (const name of conflictNames) {
         if (own[name]) final[name] = own[name];
+      }
+      if (!read.error && Object.keys(final).length === 0 && Object.keys(own).length === 0) {
+        return {
+          agent: a.id,
+          path: read.path,
+          status: "skipped",
+          message: "nothing to sync",
+        } satisfies AdapterWriteResult;
       }
       return a.write(final, { dryRun });
     }),
@@ -160,6 +172,8 @@ export async function runDirectional(opts: DirectionalOptions): Promise<Directio
   if (opts.from === opts.to) throw new Error(`syncthis: from and to must differ`);
 
   const [fromRead, toRead] = await Promise.all([fromAdapter.read(), toAdapter.read()]);
+  if (fromRead.error) throw new Error(`syncthis: cannot read source ${opts.from}: ${fromRead.error}`);
+  if (toRead.error) throw new Error(`syncthis: cannot read destination ${opts.to}: ${toRead.error}`);
   const diff = diffServers(fromRead.servers, toRead.servers);
 
   if (!opts.apply || opts.dryRun) {
@@ -175,17 +189,26 @@ export async function runSkillsOnly(): Promise<NonNullable<SyncReport["skills"]>
 }
 
 async function runSkillsUpdate(): Promise<NonNullable<SyncReport["skills"]>> {
+  let timeout: Timer | undefined;
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), SKILLS_UPDATE_TIMEOUT_MS);
     const proc = spawn(["npx", "-y", "skills", "update", "-y"], {
       stdout: "inherit",
       stderr: "pipe",
       stdin: "ignore",
+      signal: controller.signal,
     });
     const code = await proc.exited;
+    if (timeout) clearTimeout(timeout);
     if (code === 0) return { ran: true, ok: true };
     const err = await new Response(proc.stderr).text();
     return { ran: true, ok: false, message: `npx skills exited ${code}: ${err.trim().split("\n").pop() ?? ""}` };
   } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    if ((err as { name?: string }).name === "AbortError") {
+      return { ran: true, ok: false, message: `npx skills timed out after ${SKILLS_UPDATE_TIMEOUT_MS / 1000}s` };
+    }
     return { ran: true, ok: false, message: `npx skills failed: ${String(err)}` };
   }
 }

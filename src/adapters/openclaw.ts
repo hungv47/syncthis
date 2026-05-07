@@ -48,18 +48,33 @@ function fromOpenClaw(raw: Record<string, OpenClawEntry> | undefined): Record<st
   return out;
 }
 
-function toOpenClaw(servers: Record<string, McpServer>): Record<string, OpenClawEntry> {
+function toOpenClaw(
+  servers: Record<string, McpServer>,
+  previous: Record<string, OpenClawEntry> | undefined = {},
+): Record<string, OpenClawEntry> {
   const out: Record<string, OpenClawEntry> = {};
   for (const [name, s] of Object.entries(servers)) {
     if ("url" in s) {
       const transport: "sse" | "streamable-http" = s.type === "sse" ? "sse" : "streamable-http";
-      const entry: OpenClawHttp = { url: s.url, transport };
+      const prior = previous?.[name];
+      const entry: OpenClawHttp = {
+        ...(prior && "url" in prior ? prior : {}),
+        url: s.url,
+        transport,
+      };
       if (s.headers) entry.headers = s.headers;
+      else delete entry.headers;
       out[name] = entry;
     } else {
-      const entry: OpenClawStdio = { command: s.command };
+      const prior = previous?.[name];
+      const entry: OpenClawStdio = {
+        ...(prior && "command" in prior ? prior : {}),
+        command: s.command,
+      };
       if (s.args) entry.args = s.args;
+      else delete entry.args;
       if (s.env) entry.env = s.env;
+      else delete entry.env;
       out[name] = entry;
     }
   }
@@ -96,7 +111,7 @@ export const openclawAdapter: Adapter = {
     } catch (err) {
       return { agent: "openclaw", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
     }
-    const nextMcp = { ...(existing.mcp ?? {}), servers: toOpenClaw(servers) };
+    const nextMcp = { ...(existing.mcp ?? {}), servers: toOpenClaw(servers, existing.mcp?.servers) };
     const next: OpenClawShape = { ...existing, mcp: nextMcp };
     const nextText = JSON5.stringify(next, null, 2) + "\n";
     const currentText = (await readText(path)) ?? "";
