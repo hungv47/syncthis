@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import * as TOML from "smol-toml";
 import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
+import { adapters } from "../src/adapters/index.ts";
 import { runSync, computeUnion, runDirectional } from "../src/sync.ts";
 import { runDoctor } from "../src/doctor.ts";
 import type { McpServer } from "../src/types.ts";
@@ -207,6 +208,33 @@ describe("runSync (cross-pollinate)", () => {
 
     const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
     expect(gemini.mcpServers).toEqual({ gh: STDIO, lin: HTTP });
+  });
+
+  test("syncs HTTP MCPs from any source agent to every destination agent", async () => {
+    await Bun.write(
+      join(workDir, ".claude.json"),
+      JSON.stringify({ projects: { "/repo": { trustLevel: "trusted", mcpServers: {} } } }),
+    );
+
+    for (const source of adapters) {
+      const name = `from_${source.id.replace(/[^a-z0-9]/g, "_")}`;
+      const server: McpServer = { type: "http", url: `https://mcp.example.test/${name}` };
+      const seed = await source.write({ [name]: server }, { dryRun: false });
+      expect(seed.status).not.toBe("failed");
+
+      const report = await runSync({ skipSkills: true });
+      expect(report.conflicts).toEqual([]);
+      expect(report.union[name]).toEqual(server);
+
+      for (const destination of adapters) {
+        const read = await destination.read();
+        expect(read.error).toBeUndefined();
+        expect(read.servers[name]).toEqual(server);
+      }
+    }
+
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
+    expect(claude.projects["/repo"].trustLevel).toBe("trusted");
   });
 
   test("preserves conflict — leaves each agent's own version untouched", async () => {

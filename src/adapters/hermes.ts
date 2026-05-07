@@ -1,6 +1,6 @@
 import yaml from "js-yaml";
-import type { Adapter, AdapterRead, AdapterWriteResult, McpServer } from "../types.ts";
-import { expandHome, readText, writeText } from "../io.ts";
+import type { McpServer } from "../types.ts";
+import { createTextAdapter } from "./text-mcp.ts";
 
 const TARGET = "~/.hermes/config.yaml";
 
@@ -79,41 +79,11 @@ function parseYaml(text: string): HermesShape {
   return parsed as HermesShape;
 }
 
-export const hermesAdapter: Adapter = {
+export const hermesAdapter = createTextAdapter<HermesShape>({
   id: "hermes-agent",
-  targetPath: () => expandHome(TARGET),
-
-  async read(): Promise<AdapterRead> {
-    const path = expandHome(TARGET);
-    const text = await readText(path);
-    if (text === null) return { agent: "hermes-agent", path, servers: {}, exists: false };
-    try {
-      const parsed = parseYaml(text);
-      return { agent: "hermes-agent", path, servers: fromHermes(parsed.mcp_servers), exists: true };
-    } catch (err) {
-      return { agent: "hermes-agent", path, servers: {}, exists: true, error: String(err) };
-    }
-  },
-
-  async write(servers, { dryRun }): Promise<AdapterWriteResult> {
-    const path = expandHome(TARGET);
-    let existing: HermesShape;
-    try {
-      const currentText = (await readText(path)) ?? "";
-      existing = parseYaml(currentText);
-    } catch (err) {
-      return { agent: "hermes-agent", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
-    }
-    const next: HermesShape = { ...existing, mcp_servers: toHermes(servers, existing.mcp_servers) };
-    const nextText = yaml.dump(next, { lineWidth: -1, noRefs: true });
-    const currentText = (await readText(path)) ?? "";
-    if (currentText === nextText) return { agent: "hermes-agent", path, status: "unchanged" };
-    if (dryRun) return { agent: "hermes-agent", path, status: "synced", message: "dry-run" };
-    try {
-      await writeText(path, nextText, { backup: true });
-      return { agent: "hermes-agent", path, status: "synced" };
-    } catch (err) {
-      return { agent: "hermes-agent", path, status: "failed", message: String(err) };
-    }
-  },
-};
+  path: TARGET,
+  parse: parseYaml,
+  stringify: (data) => yaml.dump(data, { lineWidth: -1, noRefs: true }),
+  readServers: (data) => fromHermes(data.mcp_servers),
+  writeServers: (data, servers) => ({ ...data, mcp_servers: toHermes(servers, data.mcp_servers) }),
+});

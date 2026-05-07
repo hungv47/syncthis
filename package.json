@@ -1,6 +1,6 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Keep your AI tools in sync. Cross-pollinate MCP server configs across 11 coding agents (Claude, Cursor, Codex, Gemini, Kimi, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, Copilot). Skills delegated to npx skills. Install with mcpm or npx skills add; sync with this.",
   "type": "module",
   "license": "MIT",

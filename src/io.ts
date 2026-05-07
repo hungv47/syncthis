@@ -14,12 +14,7 @@ export async function readJson<T = unknown>(path: string): Promise<T | null> {
 }
 
 export async function writeJson(path: string, data: unknown, opts?: { backup?: boolean }) {
-  await mkdir(dirname(path), { recursive: true });
-  if (await isSymlink(path)) {
-    throw new Error(`syncthis: target is a symlink, refusing to write through it: ${path}`);
-  }
-  if (opts?.backup) await backupIfExists(path);
-  await writeRestrictive(path, JSON.stringify(data, null, 2) + "\n");
+  await writeSafe(path, JSON.stringify(data, null, 2) + "\n", opts);
 }
 
 export async function readText(path: string): Promise<string | null> {
@@ -32,12 +27,16 @@ export async function readText(path: string): Promise<string | null> {
 }
 
 export async function writeText(path: string, text: string, opts?: { backup?: boolean }) {
+  await writeSafe(path, text, opts);
+}
+
+async function writeSafe(path: string, content: string | Uint8Array, opts?: { backup?: boolean }) {
   await mkdir(dirname(path), { recursive: true });
   if (await isSymlink(path)) {
     throw new Error(`syncthis: target is a symlink, refusing to write through it: ${path}`);
   }
   if (opts?.backup) await backupIfExists(path);
-  await writeRestrictive(path, text);
+  await writeRestrictive(path, content);
 }
 
 async function isSymlink(p: string): Promise<boolean> {

@@ -1,6 +1,7 @@
 import JSON5 from "json5";
-import type { Adapter, AdapterRead, AdapterWriteResult, McpServer } from "../types.ts";
-import { expandHome, readText, resolveUnderHome, writeText } from "../io.ts";
+import type { McpServer } from "../types.ts";
+import { expandHome, resolveUnderHome } from "../io.ts";
+import { createTextAdapter } from "./text-mcp.ts";
 
 const DEFAULT_TARGET = "~/.openclaw/openclaw.json";
 
@@ -86,42 +87,14 @@ function readOpenClawFile(text: string): OpenClawShape {
   return JSON5.parse(text) as OpenClawShape;
 }
 
-export const openclawAdapter: Adapter = {
+export const openclawAdapter = createTextAdapter<OpenClawShape>({
   id: "openclaw",
-  targetPath,
-
-  async read(): Promise<AdapterRead> {
-    const path = targetPath();
-    const text = await readText(path);
-    if (text === null) return { agent: "openclaw", path, servers: {}, exists: false };
-    try {
-      const parsed = readOpenClawFile(text);
-      return { agent: "openclaw", path, servers: fromOpenClaw(parsed.mcp?.servers), exists: true };
-    } catch (err) {
-      return { agent: "openclaw", path, servers: {}, exists: true, error: String(err) };
-    }
-  },
-
-  async write(servers, { dryRun }): Promise<AdapterWriteResult> {
-    const path = targetPath();
-    let existing: OpenClawShape;
-    try {
-      const currentText = (await readText(path)) ?? "";
-      existing = readOpenClawFile(currentText);
-    } catch (err) {
-      return { agent: "openclaw", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
-    }
-    const nextMcp = { ...(existing.mcp ?? {}), servers: toOpenClaw(servers, existing.mcp?.servers) };
-    const next: OpenClawShape = { ...existing, mcp: nextMcp };
-    const nextText = JSON5.stringify(next, null, 2) + "\n";
-    const currentText = (await readText(path)) ?? "";
-    if (currentText === nextText) return { agent: "openclaw", path, status: "unchanged" };
-    if (dryRun) return { agent: "openclaw", path, status: "synced", message: "dry-run" };
-    try {
-      await writeText(path, nextText, { backup: true });
-      return { agent: "openclaw", path, status: "synced" };
-    } catch (err) {
-      return { agent: "openclaw", path, status: "failed", message: String(err) };
-    }
-  },
-};
+  path: targetPath,
+  parse: readOpenClawFile,
+  stringify: (data) => JSON5.stringify(data, null, 2) + "\n",
+  readServers: (data) => fromOpenClaw(data.mcp?.servers),
+  writeServers: (data, servers) => ({
+    ...data,
+    mcp: { ...(data.mcp ?? {}), servers: toOpenClaw(servers, data.mcp?.servers) },
+  }),
+});

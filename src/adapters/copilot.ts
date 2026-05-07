@@ -1,5 +1,6 @@
-import type { Adapter, AdapterRead, AdapterWriteResult, McpServer } from "../types.ts";
-import { expandHome, readJson, resolveUnderHome, writeJson } from "../io.ts";
+import type { McpServer } from "../types.ts";
+import { expandHome, resolveUnderHome } from "../io.ts";
+import { createJsonAdapter } from "./json-mcp.ts";
 
 const DEFAULT_TARGET = "~/.copilot/mcp-config.json";
 
@@ -82,39 +83,9 @@ function toCopilot(
   return out;
 }
 
-export const copilotAdapter: Adapter = {
+export const copilotAdapter = createJsonAdapter<CopilotShape>({
   id: "github-copilot",
-  targetPath,
-
-  async read(): Promise<AdapterRead> {
-    const path = targetPath();
-    try {
-      const data = await readJson<CopilotShape>(path);
-      if (data === null) return { agent: "github-copilot", path, servers: {}, exists: false };
-      return { agent: "github-copilot", path, servers: fromCopilot(data.mcpServers), exists: true };
-    } catch (err) {
-      return { agent: "github-copilot", path, servers: {}, exists: true, error: String(err) };
-    }
-  },
-
-  async write(servers, { dryRun }): Promise<AdapterWriteResult> {
-    const path = targetPath();
-    let existing: CopilotShape;
-    try {
-      existing = (await readJson<CopilotShape>(path)) ?? {};
-    } catch (err) {
-      return { agent: "github-copilot", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
-    }
-    const next: CopilotShape = { ...existing, mcpServers: toCopilot(servers, existing.mcpServers) };
-    if (JSON.stringify(existing) === JSON.stringify(next)) {
-      return { agent: "github-copilot", path, status: "unchanged" };
-    }
-    if (dryRun) return { agent: "github-copilot", path, status: "synced", message: "dry-run" };
-    try {
-      await writeJson(path, next, { backup: true });
-      return { agent: "github-copilot", path, status: "synced" };
-    } catch (err) {
-      return { agent: "github-copilot", path, status: "failed", message: String(err) };
-    }
-  },
-};
+  path: targetPath,
+  readServers: (data) => fromCopilot(data.mcpServers),
+  writeServers: (data, servers) => ({ ...data, mcpServers: toCopilot(servers, data.mcpServers) }),
+});

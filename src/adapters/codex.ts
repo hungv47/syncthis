@@ -1,6 +1,6 @@
 import * as TOML from "smol-toml";
-import type { Adapter, AdapterRead, AdapterWriteResult, McpServer } from "../types.ts";
-import { expandHome, readText, writeText } from "../io.ts";
+import type { McpServer } from "../types.ts";
+import { createTextAdapter } from "./text-mcp.ts";
 
 const TARGET = "~/.codex/config.toml";
 
@@ -54,34 +54,11 @@ function stripMcpServers(parsed: Record<string, unknown>): Record<string, unknow
   return rest;
 }
 
-export const codexAdapter: Adapter = {
+export const codexAdapter = createTextAdapter<Record<string, unknown>>({
   id: "codex",
-  targetPath: () => expandHome(TARGET),
-
-  async read(): Promise<AdapterRead> {
-    const path = expandHome(TARGET);
-    const text = await readText(path);
-    if (text === null) return { agent: "codex", path, servers: {}, exists: false };
-    try {
-      const parsed = TOML.parse(text) as Record<string, unknown>;
-      return { agent: "codex", path, servers: fromCodexShape(parsed.mcp_servers), exists: true };
-    } catch (err) {
-      return { agent: "codex", path, servers: {}, exists: true, error: String(err) };
-    }
-  },
-
-  async write(servers, { dryRun }): Promise<AdapterWriteResult> {
-    const path = expandHome(TARGET);
-    try {
-      const currentText = (await readText(path)) ?? "";
-      const existing = currentText ? (TOML.parse(currentText) as Record<string, unknown>) : {};
-      const next = TOML.stringify({ ...stripMcpServers(existing), mcp_servers: toCodexShape(servers) });
-      if (currentText === next) return { agent: "codex", path, status: "unchanged" };
-      if (dryRun) return { agent: "codex", path, status: "synced", message: "dry-run" };
-      await writeText(path, next, { backup: true });
-      return { agent: "codex", path, status: "synced" };
-    } catch (err) {
-      return { agent: "codex", path, status: "failed", message: String(err) };
-    }
-  },
-};
+  path: TARGET,
+  parse: (text) => (text.trim() ? (TOML.parse(text) as Record<string, unknown>) : {}),
+  stringify: TOML.stringify,
+  readServers: (data) => fromCodexShape(data.mcp_servers),
+  writeServers: (data, servers) => ({ ...stripMcpServers(data), mcp_servers: toCodexShape(servers) }),
+});

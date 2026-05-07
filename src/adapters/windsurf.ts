@@ -1,5 +1,5 @@
-import type { Adapter, AdapterRead, AdapterWriteResult, McpServer } from "../types.ts";
-import { expandHome, readJson, writeJson } from "../io.ts";
+import type { McpServer } from "../types.ts";
+import { createJsonAdapter } from "./json-mcp.ts";
 
 const TARGET = "~/.codeium/windsurf/mcp_config.json";
 
@@ -53,39 +53,9 @@ function toWindsurf(servers: Record<string, McpServer>): Record<string, Windsurf
   return out;
 }
 
-export const windsurfAdapter: Adapter = {
+export const windsurfAdapter = createJsonAdapter<WindsurfShape>({
   id: "windsurf",
-  targetPath: () => expandHome(TARGET),
-
-  async read(): Promise<AdapterRead> {
-    const path = expandHome(TARGET);
-    try {
-      const data = await readJson<WindsurfShape>(path);
-      if (data === null) return { agent: "windsurf", path, servers: {}, exists: false };
-      return { agent: "windsurf", path, servers: fromWindsurf(data.mcpServers), exists: true };
-    } catch (err) {
-      return { agent: "windsurf", path, servers: {}, exists: true, error: String(err) };
-    }
-  },
-
-  async write(servers, { dryRun }): Promise<AdapterWriteResult> {
-    const path = expandHome(TARGET);
-    let existing: WindsurfShape;
-    try {
-      existing = (await readJson<WindsurfShape>(path)) ?? {};
-    } catch (err) {
-      return { agent: "windsurf", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
-    }
-    const next: WindsurfShape = { ...existing, mcpServers: toWindsurf(servers) };
-    if (JSON.stringify(existing) === JSON.stringify(next)) {
-      return { agent: "windsurf", path, status: "unchanged" };
-    }
-    if (dryRun) return { agent: "windsurf", path, status: "synced", message: "dry-run" };
-    try {
-      await writeJson(path, next, { backup: true });
-      return { agent: "windsurf", path, status: "synced" };
-    } catch (err) {
-      return { agent: "windsurf", path, status: "failed", message: String(err) };
-    }
-  },
-};
+  path: TARGET,
+  readServers: (data) => fromWindsurf(data.mcpServers),
+  writeServers: (data, servers) => ({ ...data, mcpServers: toWindsurf(servers) }),
+});
