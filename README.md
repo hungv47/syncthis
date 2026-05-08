@@ -1,6 +1,12 @@
 # syncthis
 
+[![npm](https://img.shields.io/npm/v/@hungv47/syncthis?color=cb3837&label=npm&logo=npm&logoColor=white)](https://www.npmjs.com/package/@hungv47/syncthis)
+[![site](https://img.shields.io/badge/site-syncthis.forsvn.com-2ea44f)](https://syncthis.forsvn.com)
+[![license](https://img.shields.io/npm/l/@hungv47/syncthis)](./LICENSE)
+
 ![syncthis](./assets/banners/syncthis.png)
+
+![syncthis run mirroring MCP servers across 11 agents](./assets/demo.gif)
 
 **Keep your AI coding agents in sync.**
 
