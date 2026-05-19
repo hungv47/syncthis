@@ -20,7 +20,8 @@ For skills, syncthis delegates to [`vercel-labs/skills`](https://github.com/verc
 |---|---|
 | ✅ syncs MCP server configs across 11 coding agents | ❌ installs MCP servers (use `mcpm`, `claude mcp add`, etc.) |
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
-| ✅ supports one-way mirror between any two agents | ❌ removes servers (use your installer's removal mode) |
+| ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
+| ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
 
 ## Install
 
@@ -43,6 +44,8 @@ syncthis run
 
 That's it. No config file, no source-of-truth to maintain.
 
+For removals, do not use union sync first. Remove from a clean source or use `syncthis rm`; otherwise a server that still exists in one agent will be propagated back to the others.
+
 ## Commands
 
 ```
@@ -52,13 +55,16 @@ syncthis sync   [--dry-run] [--no-skills]   # same as run
 syncthis mcp    [--dry-run]                 # MCP only
 syncthis skills                             # skills only — `npx skills update -y`
 syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
+syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
+syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # coverage + conflict report
 syncthis help
 ```
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
-`--yes` skips the confirmation prompt for directional sync.
+`--all` is required for fan-out and remove-all commands.
+`--yes` skips the confirmation prompt for destructive commands.
 
 ## Supported agents
 
@@ -93,6 +99,13 @@ syncthis claude-code codex --dry-run
 
 Mirrors MCP servers from `claude-code` to `codex` (one-way, destructive). Shows a diff and asks for confirmation before writing — pass `--yes` to skip the prompt. The conflict policy of the union sync does NOT apply here: this is an explicit overwrite of `to`'s config with `from`'s.
 
+To fan out one clean source to every other supported agent:
+
+```bash
+syncthis from antigravity --all --dry-run
+syncthis from antigravity --all --yes
+```
+
 ## Conflict example (union sync)
 
 ```
@@ -111,9 +124,22 @@ read 3 server name(s) across 11 agent(s); 2 synced, 1 conflict(s)
 
 ## Removing a server
 
-syncthis intentionally has no `remove` command. Removal goes through your installer (`mcpm remove`, `claude mcp remove`, etc.) or by editing the agent file directly. If a server still exists in any agent after removal, the next `syncthis run` will re-propagate it to the others.
+Use the explicit remove command:
 
-To remove a server everywhere at once, delete it from every agent — or use your installer's "remove from all" mode.
+```bash
+syncthis rm executor --all --dry-run
+syncthis rm executor --all --yes
+```
+
+`syncthis run` is a union sync. If `executor` still exists in one agent, union sync will re-propagate it. `syncthis rm` avoids that by deleting the named server from every supported agent in one pass.
+
+## Desktop-owned servers
+
+Paper and Pencil can be desktop-owned: the config may be synced, but the server only responds when the desktop client starts it. syncthis only syncs config; it does not launch those apps.
+
+## Unmanaged MCP files
+
+`syncthis doctor` warns when known side files contain MCP servers that syncthis does not write, such as VS Code user MCP config or the legacy `~/.config/mcp/servers.json`. Treat those as app-owned or legacy files, not the canonical source for coding-agent sync.
 
 ## Skills
 

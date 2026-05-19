@@ -15,6 +15,8 @@ const COMMANDS: CommandRow[] = [
   { cmd: "syncthis mcp", desc: "MCP only" },
   { cmd: "syncthis skills", desc: "skills only — npx skills update -y" },
   { cmd: "syncthis <from> <to>", desc: "one-way mirror between two agents" },
+  { cmd: "syncthis from <agent> --all", desc: "mirror one source to every other agent" },
+  { cmd: "syncthis rm <server> --all", desc: "remove one server everywhere" },
   { cmd: "syncthis doctor", desc: "coverage + conflict report" },
   { cmd: "syncthis help", desc: "full help text" },
 ];

@@ -15,6 +15,10 @@ usage:
   syncthis mcp  [--dry-run]                  MCP only — skip skills update
   syncthis skills                            skills only — \`npx skills update -y\`
   syncthis <from> <to> [--yes] [--dry-run]   one-way mirror MCP from one agent to another
+  syncthis from <agent> --all [--yes] [--dry-run]
+                                             one-way mirror MCP from one agent to every other agent
+  syncthis rm <server> --all [--yes] [--dry-run]
+                                             remove one MCP server from every supported agent
   syncthis doctor                            coverage + conflict report
   syncthis help
 
@@ -34,11 +38,12 @@ agents supported (use these IDs with the directional command):
 flags:
   --dry-run    report what would change without writing.
   --no-skills  skip the skill update phase (sync/run only).
-  --yes        skip confirmation prompt (directional sync only).
+  --all        required for fan-out and remove-all commands.
+  --yes        skip confirmation prompt for destructive commands.
 
-removing a server: install/remove with your installer, then sync. if a server
-remains in any agent, sync re-propagates it. to remove from all agents at once,
-use your installer's "remove from all" mode.
+removing a server: use \`syncthis rm <server> --all --dry-run\`, review the diff,
+then rerun with \`--yes\`. plain union sync will re-propagate a server if it
+still exists in any agent.
 `;
 
 const COLOR = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -63,6 +68,7 @@ const OPTIONS = {
   "no-skills": { type: "boolean" },
   "dry-run": { type: "boolean" },
   yes: { type: "boolean", short: "y" },
+  all: { type: "boolean" },
 } as const;
 
 function parse(argv: string[]) {
@@ -94,6 +100,69 @@ async function cmdSkillsOnly() {
 async function cmdDoctor() {
   const { runDoctor } = await import("../src/doctor.ts");
   printDoctor(await runDoctor());
+}
+
+async function cmdFanOut(argv: string[]) {
+  const { runFanOut, listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  const from = positionals[0];
+  const ids = listAgentIds();
+  if (!from || !ids.includes(from as AgentId)) {
+    console.error(red(`unknown agent: ${from ?? ""}`));
+    console.error(dim(`known agents: ${ids.join(", ")}`));
+    process.exit(2);
+  }
+  if (!values.all) {
+    console.error(red("fan-out requires --all"));
+    process.exit(2);
+  }
+
+  const dryRun = !!values["dry-run"];
+  const preview = await runFanOut({ from: from as AgentId, apply: false });
+  printFanOut(preview);
+  if (!fanOutHasChanges(preview)) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    console.log(dim("dry-run — no changes applied."));
+    return;
+  }
+  await confirmDestructive(!!values.yes);
+  const applied = await runFanOut({ from: from as AgentId, apply: true });
+  printFanOutWrites(applied);
+  exitIfFailed(applied.targets.map((t) => t.write).filter((w): w is NonNullable<typeof w> => !!w));
+}
+
+async function cmdRemove(argv: string[]) {
+  const { runRemove } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  const name = positionals[0];
+  if (!name) {
+    console.error(red("server name is required"));
+    process.exit(2);
+  }
+  if (!values.all) {
+    console.error(red("remove requires --all"));
+    process.exit(2);
+  }
+
+  const dryRun = !!values["dry-run"];
+  const preview = await runRemove({ name, apply: false });
+  printRemove(preview);
+  const willChange = preview.writes.some((w) => w.status === "synced");
+  if (!willChange) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    console.log(dim("dry-run — no changes applied."));
+    return;
+  }
+  await confirmDestructive(!!values.yes);
+  const applied = await runRemove({ name, apply: true });
+  printRemove(applied);
+  exitIfFailed(applied.writes);
 }
 
 async function cmdDirectional(from: string, to: string, argv: string[]) {
@@ -145,17 +214,7 @@ async function cmdDirectional(from: string, to: string, argv: string[]) {
     return;
   }
 
-  if (!yes && process.stdin.isTTY) {
-    process.stdout.write("\nContinue? [y/N] ");
-    const answer = await readLine();
-    if (answer.trim().toLowerCase() !== "y") {
-      console.log(dim("aborted."));
-      return;
-    }
-  } else if (!yes && !process.stdin.isTTY) {
-    console.error(red("refusing destructive write without --yes in non-interactive mode."));
-    process.exit(2);
-  }
+  await confirmDestructive(yes);
 
   const applied = await runDirectional({ from: from as AgentId, to: to as AgentId, apply: true });
   if (applied.write) {
@@ -172,6 +231,57 @@ function printDirectionalDiff(r: import("../src/sync.ts").DirectionalReport) {
   if (r.diff.add.length) console.log(`  ${green("+")} add ${r.diff.add.length}:        ${r.diff.add.join(", ")}`);
   if (r.diff.overwrite.length) console.log(`  ${yellow("~")} overwrite ${r.diff.overwrite.length}:  ${r.diff.overwrite.join(", ")}`);
   if (r.diff.remove.length) console.log(`  ${red("-")} remove ${r.diff.remove.length}:     ${r.diff.remove.join(", ")}`);
+}
+
+function printFanOut(r: import("../src/sync.ts").FanOutReport) {
+  console.log(`Mirror MCP servers from ${green(r.from)} → ${green("all other agents")}:`);
+  for (const target of r.targets) {
+    if (target.toRead.error) {
+      console.log(`  ${red("✗")} ${target.to.padEnd(14)} ${dim(target.toRead.error)}`);
+      continue;
+    }
+    const parts = [
+      target.diff.add.length ? `${green("+")}${target.diff.add.length}` : "",
+      target.diff.overwrite.length ? `${yellow("~")}${target.diff.overwrite.length}` : "",
+      target.diff.remove.length ? `${red("-")}${target.diff.remove.length}` : "",
+    ].filter(Boolean);
+    console.log(`  ${parts.length ? yellow("~") : green("=")} ${target.to.padEnd(14)} ${parts.join(" ") || dim("unchanged")}`);
+  }
+}
+
+function printFanOutWrites(r: import("../src/sync.ts").FanOutReport) {
+  for (const target of r.targets) {
+    if (target.write) row(target.write.status, target.to, target.write.path, target.write.message);
+  }
+}
+
+function fanOutHasChanges(r: import("../src/sync.ts").FanOutReport): boolean {
+  return r.targets.some((target) =>
+    target.toRead.error ||
+    target.diff.add.length > 0 ||
+    target.diff.overwrite.length > 0 ||
+    target.diff.remove.length > 0,
+  );
+}
+
+function printRemove(r: import("../src/sync.ts").RemoveReport) {
+  console.log(`Remove MCP server ${green(r.name)} from all supported agents:`);
+  for (const write of r.writes) row(write.status, write.agent, write.path, write.message);
+}
+
+async function confirmDestructive(yes: boolean) {
+  if (yes) return;
+  if (process.stdin.isTTY) {
+    process.stdout.write("\nContinue? [y/N] ");
+    const answer = await readLine();
+    if (answer.trim().toLowerCase() !== "y") {
+      console.log(dim("aborted."));
+      process.exit(0);
+    }
+    return;
+  }
+  console.error(red("refusing destructive write without --yes in non-interactive mode."));
+  process.exit(2);
 }
 
 function readLine(): Promise<string> {
@@ -224,11 +334,7 @@ function printSync(r: import("../src/sync.ts").SyncReport) {
     else row("drift", "skills", "", r.skills.message ?? "failed");
   }
 
-  const failed = r.writes.filter((w) => w.status === "failed");
-  if (failed.length) {
-    console.log(red(`\n${failed.length} adapter(s) failed.`));
-    process.exit(1);
-  }
+  exitIfFailed(r.writes);
 }
 
 function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
@@ -240,14 +346,13 @@ function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
 
   if (r.coverage.length === 0) {
     console.log(dim("\nno servers configured in any agent."));
-    return;
-  }
-
-  console.log(dim(`\ncoverage:`));
-  for (const c of r.coverage) {
-    const tag = c.missing.length === 0 ? green("[full]") : yellow(`[${c.present.length}/${r.reads.length}]`);
-    const detail = c.missing.length === 0 ? "" : dim(` — missing in ${c.missing.join(", ")}`);
-    console.log(`  ${tag} ${c.name}${detail}`);
+  } else {
+    console.log(dim(`\ncoverage:`));
+    for (const c of r.coverage) {
+      const tag = c.missing.length === 0 ? green("[full]") : yellow(`[${c.present.length}/${r.reads.length}]`);
+      const detail = c.missing.length === 0 ? "" : dim(` — missing in ${c.missing.join(", ")}`);
+      console.log(`  ${tag} ${c.name}${detail}`);
+    }
   }
 
   if (r.conflicts.length) {
@@ -255,6 +360,22 @@ function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
     for (const c of r.conflicts) {
       console.log(`  ${yellow("~")} ${c.name} — different config in ${c.versions.map((v) => v.agent).join(", ")}`);
     }
+    process.exit(1);
+  }
+
+  if (r.unmanaged.length) {
+    console.log(yellow(`\nunmanaged MCP config(s) with servers:`));
+    for (const u of r.unmanaged) {
+      console.log(`  ${yellow("~")} ${u.label.padEnd(18)} ${dim(u.path)} ${dim(`(${u.serverNames.join(", ")})`)}`);
+    }
+    console.log(dim("  these files are not written by syncthis; clear or manage them separately."));
+  }
+}
+
+function exitIfFailed(writes: { status: RowStatus }[]) {
+  const failed = writes.filter((w) => w.status === "failed");
+  if (failed.length) {
+    console.log(red(`\n${failed.length} adapter(s) failed.`));
     process.exit(1);
   }
 }
@@ -279,6 +400,8 @@ async function main() {
   if (cmd === "mcp") return cmdMcp(rest);
   if (cmd === "skills") return cmdSkillsOnly();
   if (cmd === "doctor") return cmdDoctor();
+  if (cmd === "from") return cmdFanOut(rest);
+  if (cmd === "rm" || cmd === "remove") return cmdRemove(rest);
 
   // Directional: two positional agent IDs.
   if (rest.length >= 1 && !cmd.startsWith("-")) {

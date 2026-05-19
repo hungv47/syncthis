@@ -6,7 +6,7 @@ import * as TOML from "smol-toml";
 import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
 import { adapters } from "../src/adapters/index.ts";
-import { runSync, computeUnion, runDirectional } from "../src/sync.ts";
+import { runSync, computeUnion, runDirectional, runFanOut, runRemove } from "../src/sync.ts";
 import { runDoctor } from "../src/doctor.ts";
 import type { McpServer } from "../src/types.ts";
 
@@ -335,6 +335,62 @@ describe("runSync (cross-pollinate)", () => {
     const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
     expect(cursor.mcpServers.gh).toEqual(STDIO);
   });
+
+  test("fan-out mirrors one clean source to every other agent", async () => {
+    await writeAgentJson(".gemini/antigravity/mcp_config.json", { lin: HTTP });
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+
+    const preview = await runFanOut({ from: "antigravity", apply: false });
+    expect(preview.targets.find((t) => t.to === "cursor")?.diff.remove).toEqual(["gh"]);
+
+    const applied = await runFanOut({ from: "antigravity", apply: true });
+    expect(applied.targets.some((t) => t.write?.status === "failed")).toBe(false);
+
+    for (const adapter of adapters.filter((a) => a.id !== "antigravity")) {
+      const read = await adapter.read();
+      expect(read.servers).toEqual({ lin: HTTP });
+    }
+  });
+
+  test("remove deletes one server from every agent without union re-propagation", async () => {
+    await writeAgentJson(".claude.json", { gh: STDIO, lin: HTTP });
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+
+    const preview = await runRemove({ name: "gh", apply: false });
+    expect(preview.writes.filter((w) => w.status === "synced")).toHaveLength(2);
+
+    const applied = await runRemove({ name: "gh", apply: true });
+    expect(applied.writes.some((w) => w.status === "failed")).toBe(false);
+
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
+    expect(claude.mcpServers).toEqual({ lin: HTTP });
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers).toEqual({});
+  });
+
+  test("remove deletes Claude project-scoped servers too", async () => {
+    await Bun.write(
+      join(workDir, ".claude.json"),
+      JSON.stringify({
+        mcpServers: { top: STDIO },
+        projects: {
+          "/repo": { mcpServers: { gh: STDIO, keep: HTTP }, trustLevel: "trusted" },
+        },
+      }),
+    );
+
+    const applied = await runRemove({ name: "gh", apply: true });
+    expect(applied.writes.find((w) => w.agent === "claude-code")?.status).toBe("synced");
+
+    const { claudeAdapter } = await import("../src/adapters/claude.ts");
+    const read = await claudeAdapter.read();
+    expect(read.servers.gh).toBeUndefined();
+    expect(read.servers.keep).toEqual(HTTP);
+
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
+    expect(claude.projects["/repo"].mcpServers).toEqual({ keep: HTTP });
+    expect(claude.projects["/repo"].trustLevel).toBe("trusted");
+  });
 });
 
 describe("runDoctor", () => {
@@ -367,6 +423,23 @@ describe("runDoctor", () => {
     const r = await runDoctor();
     expect(r.conflicts).toHaveLength(1);
     expect(r.conflicts[0]!.name).toBe("dup");
+  });
+
+  test("reports unmanaged MCP files with configured servers", async () => {
+    await mkdir(join(workDir, "Library", "Application Support", "Code", "User"), { recursive: true });
+    await Bun.write(
+      join(workDir, "Library", "Application Support", "Code", "User", "mcp.json"),
+      JSON.stringify({ servers: { posthog: HTTP } }),
+    );
+    await mkdir(join(workDir, ".vscode"), { recursive: true });
+    await Bun.write(join(workDir, ".vscode", "mcp.json"), JSON.stringify({ servers: {} }));
+    await mkdir(join(workDir, ".config", "mcp"), { recursive: true });
+    await Bun.write(join(workDir, ".config", "mcp", "servers.json"), JSON.stringify({ paper: HTTP }));
+
+    const r = await runDoctor();
+    expect(r.unmanaged.map((u) => u.label).sort()).toEqual(["VS Code user MCP", "legacy MCP registry"]);
+    expect(r.unmanaged.find((u) => u.label === "VS Code user MCP")?.serverNames).toEqual(["posthog"]);
+    expect(r.unmanaged.find((u) => u.label === "legacy MCP registry")?.serverNames).toEqual(["paper"]);
   });
 });
 

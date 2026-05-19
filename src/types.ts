@@ -51,4 +51,5 @@ export interface Adapter {
   targetPath(): string;
   read(): Promise<AdapterRead>;
   write(servers: Record<string, McpServer>, opts: { dryRun: boolean }): Promise<AdapterWriteResult>;
+  removeServer?(name: string, opts: { dryRun: boolean }): Promise<AdapterWriteResult>;
 }

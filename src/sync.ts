@@ -25,6 +25,26 @@ export type DirectionalReport = {
   write?: AdapterWriteResult;
 };
 
+export type FanOutTarget = {
+  to: AgentId;
+  toRead: AdapterRead;
+  diff: DirectionalDiff;
+  write?: AdapterWriteResult;
+};
+
+export type FanOutReport = {
+  from: AgentId;
+  fromRead: AdapterRead;
+  targets: FanOutTarget[];
+  applied: boolean;
+};
+
+export type RemoveReport = {
+  name: string;
+  applied: boolean;
+  writes: AdapterWriteResult[];
+};
+
 export type Conflict = {
   name: string;
   versions: { agent: AgentId; server: McpServer }[];
@@ -182,6 +202,71 @@ export async function runDirectional(opts: DirectionalOptions): Promise<Directio
 
   const write = await toAdapter.write(fromRead.servers, { dryRun: false });
   return { from: opts.from, to: opts.to, fromRead, toRead, diff, applied: true, write };
+}
+
+export async function runFanOut(opts: { from: AgentId; dryRun?: boolean; apply: boolean }): Promise<FanOutReport> {
+  const fromAdapter = findAdapter(opts.from);
+  if (!fromAdapter) throw new Error(`syncthis: unknown agent: ${opts.from}`);
+
+  const fromRead = await fromAdapter.read();
+  if (fromRead.error) throw new Error(`syncthis: cannot read source ${opts.from}: ${fromRead.error}`);
+
+  const targets = await Promise.all(
+    adapters
+      .filter((a) => a.id !== opts.from)
+      .map(async (adapter): Promise<FanOutTarget> => {
+        const toRead = await adapter.read();
+        if (toRead.error) {
+          return {
+            to: adapter.id,
+            toRead,
+            diff: { add: [], overwrite: [], remove: [] },
+            write: opts.apply && !opts.dryRun
+              ? { agent: adapter.id, path: toRead.path, status: "failed", message: toRead.error }
+              : undefined,
+          };
+        }
+
+        const diff = diffServers(fromRead.servers, toRead.servers);
+        const hasChange = diff.add.length > 0 || diff.overwrite.length > 0 || diff.remove.length > 0;
+        if (!opts.apply || !hasChange) return { to: adapter.id, toRead, diff };
+        const write = await adapter.write(fromRead.servers, { dryRun: !!opts.dryRun });
+        return { to: adapter.id, toRead, diff, write };
+      }),
+  );
+
+  return { from: opts.from, fromRead, targets, applied: opts.apply && !opts.dryRun };
+}
+
+export async function runRemove(opts: { name: string; dryRun?: boolean; apply: boolean }): Promise<RemoveReport> {
+  const name = opts.name.trim();
+  if (!name) throw new Error("syncthis: server name is required");
+
+  const reads = await Promise.all(adapters.map((a) => a.read()));
+  const readsByAgent = new Map(reads.map((r) => [r.agent, r]));
+  const writes = await Promise.all(
+    adapters.map(async (adapter): Promise<AdapterWriteResult> => {
+      const read = readsByAgent.get(adapter.id)!;
+      if (read.error) {
+        return { agent: adapter.id, path: read.path, status: "failed", message: read.error };
+      }
+      if (!read.servers[name]) {
+        return { agent: adapter.id, path: read.path, status: "skipped", message: "not present" };
+      }
+      if (adapter.removeServer) {
+        if (!opts.apply) return adapter.removeServer(name, { dryRun: true });
+        return adapter.removeServer(name, { dryRun: !!opts.dryRun });
+      }
+      const next = { ...read.servers };
+      delete next[name];
+      if (!opts.apply) {
+        return { agent: adapter.id, path: read.path, status: "synced", message: "dry-run" };
+      }
+      return adapter.write(next, { dryRun: !!opts.dryRun });
+    }),
+  );
+
+  return { name, applied: opts.apply && !opts.dryRun, writes };
 }
 
 export async function runSkillsOnly(): Promise<NonNullable<SyncReport["skills"]>> {

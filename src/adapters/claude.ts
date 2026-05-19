@@ -1,5 +1,6 @@
-import type { McpServer } from "../types.ts";
+import type { AdapterWriteResult, McpServer } from "../types.ts";
 import { createJsonAdapter } from "./json-mcp.ts";
+import { expandHome, readJson, writeJson } from "../io.ts";
 
 const TARGET = "~/.claude.json";
 
@@ -40,9 +41,62 @@ function mergeAllScopes(data: ClaudeShape): Record<string, McpServer> {
   return merged;
 }
 
-export const claudeAdapter = createJsonAdapter<ClaudeShape>({
+const baseClaudeAdapter = createJsonAdapter<ClaudeShape>({
   id: "claude-code",
   path: TARGET,
   readServers: mergeAllScopes,
   writeServers: (data, servers) => ({ ...data, mcpServers: servers }),
 });
+
+export const claudeAdapter = {
+  ...baseClaudeAdapter,
+  async removeServer(name: string, { dryRun }: { dryRun: boolean }): Promise<AdapterWriteResult> {
+    const path = expandHome(TARGET);
+    let data: ClaudeShape;
+    try {
+      data = (await readJson<ClaudeShape>(path)) ?? {};
+    } catch (err) {
+      return { agent: "claude-code", path, status: "failed", message: `cannot parse existing file: ${String(err)}` };
+    }
+
+    const next: ClaudeShape = {
+      ...data,
+      mcpServers: removeName(data.mcpServers, name),
+      projects: removeFromProjects(data.projects, name),
+    };
+
+    if (JSON.stringify(data) === JSON.stringify(next)) {
+      return { agent: "claude-code", path, status: "skipped", message: "not present" };
+    }
+    if (dryRun) return { agent: "claude-code", path, status: "synced", message: "dry-run" };
+
+    try {
+      await writeJson(path, next, { backup: true });
+      return { agent: "claude-code", path, status: "synced" };
+    } catch (err) {
+      return { agent: "claude-code", path, status: "failed", message: String(err) };
+    }
+  },
+};
+
+function removeName(servers: Record<string, McpServer> | undefined, name: string): Record<string, McpServer> | undefined {
+  if (!servers || !(name in servers)) return servers;
+  const next = { ...servers };
+  delete next[name];
+  return next;
+}
+
+function removeFromProjects(
+  projects: Record<string, ClaudeProject> | undefined,
+  name: string,
+): Record<string, ClaudeProject> | undefined {
+  if (!projects) return projects;
+  let changed = false;
+  const next: Record<string, ClaudeProject> = {};
+  for (const [projectPath, project] of Object.entries(projects)) {
+    const projectServers = removeName(project.mcpServers, name);
+    if (projectServers !== project.mcpServers) changed = true;
+    next[projectPath] = { ...project, mcpServers: projectServers };
+  }
+  return changed ? next : projects;
+}
