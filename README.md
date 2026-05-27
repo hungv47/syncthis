@@ -8,11 +8,31 @@
 
 ![syncthis run mirroring MCP servers across 11 agents](./assets/demo.gif)
 
-**Keep your AI coding agents in sync.**
+**One CLI to keep MCP servers, plugins, and marketplaces synced across your AI coding agents.**
 
-A sync layer for MCP server configs across 11 AI coding agents — **Claude Code, Cursor, Codex, Gemini CLI, Kimi CLI, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, GitHub Copilot CLI**. Install MCPs with whatever tool you prefer — `mcpm`, `claude mcp add`, etc. — then run `syncthis run` to mirror them everywhere.
+You install MCPs and plugins with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, and so on. syncthis is the sync layer on top: read every agent's config, compute the union, write it back, and report conflicts.
 
-For skills, syncthis delegates to [`vercel-labs/skills`](https://github.com/vercel-labs/skills), which supports 55 agents.
+Supported agents: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total for MCP sync. The new plugin/marketplace surface (v0.3) covers Claude Code, Codex, Cursor, and OpenCode. Skills are delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills), which handles 55 agents.
+
+## Quick start
+
+No install required — run it on demand:
+
+```bash
+npx @hungv47/syncthis run
+```
+
+That mirrors MCP servers across every detected agent, then refreshes skills via `npx skills update -y`. Add `--dry-run` to preview without writing.
+
+If you'd rather have `syncthis` on your `PATH`:
+
+```bash
+bun install -g @hungv47/syncthis
+# or
+npm install -g @hungv47/syncthis
+```
+
+After global install, drop the `npx @hungv47/syncthis` prefix — every command below works as `syncthis <cmd>` instead.
 
 ## What syncthis is — and isn't
 
@@ -24,28 +44,21 @@ For skills, syncthis delegates to [`vercel-labs/skills`](https://github.com/verc
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
 | ✅ removes plugins and marketplaces across Claude / Codex / Cursor / OpenCode | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
 
-## Install
-
-```bash
-bun install -g @hungv47/syncthis
-# or
-npm install -g @hungv47/syncthis
-```
-
 ## How it works
 
 ```bash
-# 1. install MCP servers / skills with your preferred tool
+# 1. install MCP servers / skills / plugins with your preferred tool
 mcpm install github
 npx skills add vercel-labs/agent-skills --skill frontend-design
+claude plugin install vercel-plugin@plugins-cli
 
-# 2. mirror everything to every agent
+# 2. mirror MCP servers + refresh skills across every agent
 syncthis run
 ```
 
-That's it. No config file, no source-of-truth to maintain.
+No config file, no source-of-truth to maintain. Each agent's own config is the truth; syncthis just keeps them in agreement.
 
-For removals, do not use union sync first. Remove from a clean source or use `syncthis rm`; otherwise a server that still exists in one agent will be propagated back to the others.
+For removals, do not rely on union sync — it is additive only. Use the explicit `rm` commands (see below); otherwise a server or plugin that still exists in one agent will be re-propagated to the others on the next `run`.
 
 ## Commands
 
