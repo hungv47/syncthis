@@ -53,6 +53,20 @@ export type PluginRemoveResult = {
   message?: string;
 };
 
+export type PluginInstallOpts = {
+  dryRun: boolean;
+  marketplace?: string;
+};
+
+export type InstallStatus = "installed" | "present" | "skipped" | "failed";
+
+export type PluginInstallResult = {
+  agent: AgentId;
+  target: string;
+  status: InstallStatus;
+  message?: string;
+};
+
 export interface PluginAdapter {
   id: AgentId;
   pluginKind: PluginKind;
@@ -61,4 +75,7 @@ export interface PluginAdapter {
   read(): Promise<PluginAdapterRead>;
   removePlugin?(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult>;
   removeMarketplace?(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult>;
+  // Mirror layer (Phase 2). Optional — agents without a usable install pathway
+  // (currently Cursor — no native CLI) will simply be skipped by `mirror`.
+  installPlugin?(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult>;
 }

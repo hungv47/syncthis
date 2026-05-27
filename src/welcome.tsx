@@ -3,7 +3,9 @@ import { Box, Text, render } from "ink";
 import BigText from "ink-big-text";
 import Gradient from "ink-gradient";
 
-const VERSION = "0.2.0";
+import packageJson from "../package.json" with { type: "json" };
+
+const VERSION = packageJson.version;
 
 interface CommandRow {
   cmd: string;
@@ -11,12 +13,13 @@ interface CommandRow {
 }
 
 const COMMANDS: CommandRow[] = [
-  { cmd: "syncthis sync", desc: "MCP + skills across all 11 agents" },
-  { cmd: "syncthis mcp", desc: "MCP only" },
-  { cmd: "syncthis skills", desc: "skills only — npx skills update -y" },
-  { cmd: "syncthis <from> <to>", desc: "one-way mirror between two agents" },
-  { cmd: "syncthis from <agent> --all", desc: "mirror one source to every other agent" },
-  { cmd: "syncthis rm <server> --all", desc: "remove one server everywhere" },
+  { cmd: "syncthis sync", desc: "MCP union + skills + auto-repair (all agents)" },
+  { cmd: "syncthis status", desc: "plugin × agent matrix — find silent failures" },
+  { cmd: "syncthis fix", desc: "repair silent-failure plugin installs" },
+  { cmd: "syncthis mirror <primary>", desc: "destructive plugin push from primary → all" },
+  { cmd: "syncthis mcp / skills", desc: "MCP-only or skills-only sync" },
+  { cmd: "syncthis <from> <to>", desc: "one-way MCP mirror between two agents" },
+  { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
   { cmd: "syncthis doctor", desc: "coverage + conflict report" },
   { cmd: "syncthis help", desc: "full help text" },
 ];

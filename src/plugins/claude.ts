@@ -4,6 +4,8 @@ import { assertSafeIdentifier, parsePluginId, run, safeRmUnder } from "./shell.t
 import type {
   PluginAdapter,
   PluginAdapterRead,
+  PluginInstallOpts,
+  PluginInstallResult,
   PluginRecord,
   PluginRemoveOpts,
   PluginRemoveResult,
@@ -161,6 +163,27 @@ export const claudePluginAdapter: PluginAdapter = {
       }
     }
     return { agent: "claude-code", target, status: "removed", message };
+  },
+
+  async installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult> {
+    try {
+      assertSafeIdentifier(name, "plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "claude-code", target: name, status: "failed", message: (err as Error).message };
+    }
+    const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
+    // Skip if already present in the canonical identity.
+    const read = await this.read();
+    if (!read.error) {
+      const found = read.plugins.find((p) => p.name === name && (!opts.marketplace || p.marketplace === opts.marketplace));
+      if (found) return { agent: "claude-code", target, status: "present" };
+    }
+    if (opts.dryRun) return { agent: "claude-code", target, status: "installed", message: "dry-run" };
+    const res = await run("claude", ["plugin", "install", "--yes", "--", target]);
+    if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
+    if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+    return { agent: "claude-code", target, status: "installed" };
   },
 
   async removeMarketplace(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult> {

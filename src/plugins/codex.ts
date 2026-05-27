@@ -8,6 +8,8 @@ import type {
   MarketplaceSourceType,
   PluginAdapter,
   PluginAdapterRead,
+  PluginInstallOpts,
+  PluginInstallResult,
   PluginRecord,
   PluginRemoveOpts,
   PluginRemoveResult,
@@ -163,6 +165,26 @@ export const codexPluginAdapter: PluginAdapter = {
       if (swept.length) message = `purged ${swept.join(", ")}`;
     }
     return { agent: "codex", target, status: "removed", message };
+  },
+
+  async installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult> {
+    try {
+      assertSafeIdentifier(name, "plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "codex", target: name, status: "failed", message: (err as Error).message };
+    }
+    const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
+    const read = await this.read();
+    if (!read.error) {
+      const found = read.plugins.find((p) => p.name === name && (!opts.marketplace || p.marketplace === opts.marketplace));
+      if (found) return { agent: "codex", target, status: "present" };
+    }
+    if (opts.dryRun) return { agent: "codex", target, status: "installed", message: "dry-run" };
+    const res = await run("codex", ["plugin", "add", "--", target]);
+    if (res.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
+    if (!res.ok) return { agent: "codex", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+    return { agent: "codex", target, status: "installed" };
   },
 
   async removeMarketplace(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult> {
