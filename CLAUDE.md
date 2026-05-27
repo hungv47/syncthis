@@ -74,7 +74,7 @@ syncthis help
 
 ## Sacred elements — do not change without explicit approval
 
-1. **No `remove` command.** Removal goes through the user's installer (`mcpm remove`, `claude mcp remove`, etc.) or by editing the agent file directly. A surprise-deletion-across-11-agents footgun is unacceptable.
+1. **Removal is allowed only with explicit rails.** Union `sync` never deletes — it is purely additive. Removal commands (`syncthis rm`, `syncthis plugin rm`, `syncthis marketplace rm`) must require (a) an explicit scope flag (`--all` or `--agents <id,id,...>`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` available to preview. There is no implicit deletion anywhere in the tool.
 2. **`.syncthis.bak` backup on first write.** Every target file gets a backup the first time syncthis writes to it. Tests assert this. Don't change the contract or the suffix.
 3. **Conflict policy (union sync): leave each agent's own copy untouched.** If the same server name has different configs in different agents (different env, command, args), `run`/`sync` does NOT pick a winner — it leaves each agent's existing version alone and reports the conflict. The user resolves by deleting the version they don't want and re-running sync.
 4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 11 adapters.

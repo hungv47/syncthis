@@ -22,6 +22,7 @@ For skills, syncthis delegates to [`vercel-labs/skills`](https://github.com/verc
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
+| ✅ removes plugins and marketplaces across Claude / Codex / Cursor / OpenCode | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
 
 ## Install
 
@@ -58,6 +59,14 @@ syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent 
 syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # coverage + conflict report
+
+# Plugin and marketplace inspection / removal (Claude, Codex, Cursor, OpenCode)
+syncthis plugin list                        # list installed plugins per agent
+syncthis plugin doctor                      # plugin + marketplace coverage report
+syncthis plugin rm <name> --all [--yes] [--dry-run] [--purge]
+syncthis plugin rm --marketplace <name> --all [--yes] [--dry-run] [--purge]
+syncthis marketplace list                   # list registered marketplaces per agent
+syncthis marketplace rm <name> --all [--yes] [--dry-run] [--purge]
 syncthis help
 ```
 
@@ -65,6 +74,8 @@ syncthis help
 `--no-skills` skips the skills update phase.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
+`--purge` (plugin / marketplace rm) also sweeps on-disk cache dirs the agent leaves behind.
+`--marketplace <name>` (plugin rm) removes every plugin that came from a marketplace.
 
 ## Supported agents
 
@@ -132,6 +143,34 @@ syncthis rm executor --all --yes
 ```
 
 `syncthis run` is a union sync. If `executor` still exists in one agent, union sync will re-propagate it. `syncthis rm` avoids that by deleting the named server from every supported agent in one pass.
+
+## Plugins and marketplaces
+
+syncthis can inspect and remove plugins (and their source marketplaces) across **Claude Code, Codex, Cursor, and OpenCode**. Installation is left to each agent's native tool (`claude plugin install`, `codex plugin add`, `npx plugins add`, `opencode plugin <module>`).
+
+```bash
+# See what's installed where
+syncthis plugin list
+syncthis plugin doctor
+syncthis marketplace list
+
+# Remove one plugin everywhere (handles per-agent marketplace suffix mismatches)
+syncthis plugin rm vercel-plugin --all --dry-run
+syncthis plugin rm vercel-plugin --all --yes
+
+# Remove every plugin that came from a marketplace, in one pass
+syncthis plugin rm --marketplace knowledge-work-plugins --all --yes --purge
+
+# Drop a marketplace registration entirely + sweep its on-disk cache
+syncthis marketplace rm knowledge-work-plugins --all --yes --purge
+```
+
+`--purge` also `rm -rf`'s the on-disk cache directories the agent leaves behind after a registration-only uninstall (Claude leaves `~/.claude/plugins/cache/<marketplace>/<plugin>/`, Codex leaves `~/.codex/plugins/cache/<source>/<plugin>/`). Containment-checked with `realpath` — refuses to delete anything outside the agent's plugins tree.
+
+**Scope notes:**
+- **Cursor** has no native plugin/marketplace CLI, so syncthis works file-level on `~/.cursor/plugins/`.
+- **OpenCode** plugins are npm runtime modules listed in `opencode.json`'s `plugin` array, NOT GitHub-bundle plugins like the other three. They live in their own cohort — `plugin list` shows them, removal works on the npm-name, but they never cross-mirror into Claude/Codex/Cursor.
+- The other 7 supported agents (Gemini, Kimi, Hermes, Windsurf, Antigravity, Copilot, OpenClaw) stay in MCP-sync and skills scope only — they have no GitHub-bundle plugin surface for syncthis to manage.
 
 ## Desktop-owned servers
 

@@ -33,5 +33,7 @@ logs
 # syncthis backups (in case anyone runs the tool inside this repo)
 *.syncthis.bak
 
-# agent process artifacts (specs, plans, reports)
+# agent process artifacts (specs, plans, review/cleanup records)
 .agents/
+.forsvn/
+PLAN-*.md
