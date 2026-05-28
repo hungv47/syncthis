@@ -177,8 +177,8 @@ async function doMirror() {
   // Skips (no Codex marketplace / ambiguous) are expected, not errors. Only a
   // real install error makes this a failure worth flagging loudly.
   if (failed > 0) log.error(`${summary} — run \`syncthis mirror ${primary}\` for detail`);
-  else if (skipped > 0) log.success(`mirror complete: ${summary} (skipped need their marketplace added in Codex).`);
   else log.success(`mirror complete: ${summary}.`);
+  if (skipped > 0) log.info("some skipped plugins are skills bundles — run `syncthis run` to sync those as skills.");
 }
 
 async function doDoctor() {

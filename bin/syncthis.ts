@@ -206,6 +206,7 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
     failed ? red(`${failed} failed`) : "",
   ].filter(Boolean);
   if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
+  if (skipped > 0) console.log(dim("tip: some skipped plugins are skills bundles — run `syncthis run` to sync those as skills."));
   // Only a genuine `codex plugin add` error is a failure; skips are expected.
   if (failed > 0) process.exit(1);
 }
