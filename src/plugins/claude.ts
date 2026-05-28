@@ -68,13 +68,14 @@ export const claudePluginAdapter: PluginAdapter = {
     const map = new Map<string, string>();
     const res = await run("claude", ["plugin", "marketplace", "list", "--json"]);
     if (!res.ok) return map;
-    let raw: Array<{ name?: string; source?: string; repo?: string }>;
+    let raw: unknown;
     try {
       raw = JSON.parse(res.stdout || "[]");
     } catch {
       return map;
     }
-    for (const m of raw) {
+    if (!Array.isArray(raw)) return map;
+    for (const m of raw as Array<{ name?: string; source?: string; repo?: string }>) {
       if (m.name && m.source === "github" && m.repo) map.set(m.name, m.repo);
     }
     return map;

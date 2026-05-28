@@ -62,16 +62,17 @@ esac
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
-async function installFakeClaude(pluginsJson: string) {
+async function installFakeClaude(pluginsJson: string, marketplaceJson = "[]") {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
   const pluginsFile = join(workDir, "plugins.json");
+  const mktFile = join(workDir, "marketplaces.json");
   await writeFile(pluginsFile, pluginsJson);
+  await writeFile(mktFile, marketplaceJson);
   const script = `#!/bin/sh
-case "$1 $2 $3" in
-  "plugin list --json") cat ${pluginsFile} ;;
-  *) echo "unexpected: $@" >&2 ; exit 99 ;;
-esac
+if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then cat ${mktFile}; exit 0; fi
+if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${pluginsFile}; exit 0; fi
+echo "unexpected: $@" >&2; exit 99
 `;
   const claudePath = join(binDir, "claude");
   await writeFile(claudePath, script);
@@ -171,5 +172,26 @@ describe("claude plugin adapter", () => {
     const r = await claudePluginAdapter.read();
     expect(r.error).toBeTruthy();
     expect(r.exists).toBe(false);
+  });
+
+  test("marketplaceSources maps github marketplaces to owner/repo", async () => {
+    await installFakeClaude(
+      "[]",
+      JSON.stringify([
+        { name: "claude-code-warp", source: "github", repo: "warpdotdev/claude-code-warp" },
+        { name: "local-mkt", source: "local", repo: undefined, installLocation: "/x" },
+        { name: "no-repo", source: "github" },
+      ]),
+    );
+    const map = await claudePluginAdapter.marketplaceSources!();
+    expect(map.get("claude-code-warp")).toBe("warpdotdev/claude-code-warp");
+    expect(map.has("local-mkt")).toBe(false); // non-github omitted
+    expect(map.has("no-repo")).toBe(false); // no repo omitted
+  });
+
+  test("marketplaceSources returns empty map on non-array JSON (no throw)", async () => {
+    await installFakeClaude("[]", JSON.stringify({ marketplaces: [] }));
+    const map = await claudePluginAdapter.marketplaceSources!();
+    expect(map.size).toBe(0);
   });
 });
