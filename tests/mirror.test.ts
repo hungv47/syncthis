@@ -79,25 +79,6 @@ enabled = true
     expect(codexTarget.diff!.add.map((p) => p.name).sort()).toEqual(["foo"]);
   });
 
-  test("kind mismatch (bundle → npm) is flagged unsupported, not silently mirrored", async () => {
-    await installFakeCli("claude", JSON.stringify([{ id: "foo", enabled: true }]));
-    const report = await runMirror({ from: "claude-code", apply: false });
-    const opencode = report.targets.find((t) => t.to === "opencode")!;
-    expect(opencode.diff).toBeNull();
-    expect(opencode.unsupportedReason).toContain("kind mismatch");
-  });
-
-  test("target with no install primitive (cursor) shows no add list and explains why", async () => {
-    // Cursor is bundle-kind but has no installPlugin. Preview must not list adds
-    // for it — apply can't push them, so a confirmed diff that did would lie.
-    await installFakeCli("claude", JSON.stringify([{ id: "foo@mkt", enabled: true }]));
-    const report = await runMirror({ from: "claude-code", apply: false });
-    const cursor = report.targets.find((t) => t.to === "cursor")!;
-    expect(cursor.diff).not.toBeNull();
-    expect(cursor.diff!.add).toEqual([]);
-    expect(cursor.unsupportedReason).toContain("no install primitive");
-  });
-
   test("preview without apply does not invoke CLI install", async () => {
     await installFakeCli("claude", JSON.stringify([{ id: "alpha@mkt", enabled: true }]));
     await installFakeCli("codex", "");
@@ -180,5 +161,53 @@ enabled = true
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.remove.map((p) => p.name)).toEqual(["stale"]);
     expect(codex.diff!.add).toEqual([]);
+  });
+});
+
+describe("runMirror — cross-agent marketplace tags (regression)", () => {
+  // The same upstream plugin carries an agent-local marketplace tag:
+  // forsvn-skills@forsvn-skills in Claude, forsvn-skills@plugins-cli in Codex.
+  // Identity for the diff must be the BARE name, or every such plugin gets a
+  // spurious re-add. (Fixtures elsewhere reuse one tag on both sides, which is
+  // why this gap went unnoticed.)
+  test("same plugin under different marketplace tags is NOT re-added", async () => {
+    await installFakeCli("claude", JSON.stringify([{ id: "forsvn-skills@forsvn-skills", enabled: true }]));
+    await installFakeCli("codex", "");
+    await writeCodexConfig(`
+[plugins."forsvn-skills@plugins-cli"]
+enabled = true
+`);
+    const report = await runMirror({ from: "claude-code", apply: false });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    expect(codex.diff!.add).toEqual([]);
+    expect(mirrorHasChanges(report)).toBe(false);
+  });
+
+  test("only a genuinely-absent bare name is proposed for add", async () => {
+    await installFakeCli(
+      "claude",
+      JSON.stringify([
+        { id: "forsvn-skills@forsvn-skills", enabled: true },
+        { id: "vercel@claude-mkt", enabled: true },
+      ]),
+    );
+    await installFakeCli("codex", "");
+    await writeCodexConfig(`
+[plugins."forsvn-skills@plugins-cli"]
+enabled = true
+`);
+    const report = await runMirror({ from: "claude-code", apply: false });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    expect(codex.diff!.add.map((p) => p.name)).toEqual(["vercel"]);
+  });
+
+  test("apply installs the missing plugin by BARE name, not the source marketplace tag", async () => {
+    await installFakeCli("claude", JSON.stringify([{ id: "vercel@claude-mkt", enabled: true }]));
+    await installFakeCli("codex", "");
+    await writeCodexConfig("");
+    await runMirror({ from: "claude-code", apply: true });
+    const invocations = await readInvocations();
+    expect(invocations.some((l) => l.trim() === "codex plugin add -- vercel")).toBe(true);
+    expect(invocations.some((l) => /vercel@claude-mkt/.test(l))).toBe(false);
   });
 });

@@ -1,12 +1,10 @@
-// Plugin mirror — destructive primary → all sync (Phase 2 of plan-cross-agent-sync.md).
+// Plugin mirror — destructive primary → other-agent sync.
 //
-// Reads the user-designated primary agent's installed plugins, computes a diff
-// against every other agent that supports the same plugin kind, and applies
-// installs / removes via the adapter's native primitives. Always shows a diff
-// and prompts for confirmation OR honors --yes (sacred §10).
-//
-// Mismatched kinds (bundle vs npm) are intentionally never crossed — Codex
-// bundles don't translate to OpenCode npm modules.
+// Reads the primary agent's installed plugins, diffs against the other plugin
+// agent, and applies installs (and, with --remove-stale, removes) via each
+// adapter's native CLI. Always shows a diff and prompts for confirmation OR
+// honors --yes. The cohort is the two bundle agents with an install CLI
+// (Claude, Codex); both implement installPlugin + removePlugin.
 
 import { pluginAdapters } from "./index.ts";
 import type {
@@ -28,7 +26,7 @@ export type MirrorDiff = {
 export type MirrorTarget = {
   to: AgentId;
   toRead: PluginAdapterRead;
-  // null when the target's plugin kind differs from primary's (unmirrorable).
+  // null when the target's config could not be read (see unsupportedReason).
   diff: MirrorDiff | null;
   unsupportedReason?: string;
   installs?: PluginInstallResult[];
@@ -54,13 +52,13 @@ function adapterFor(id: AgentId): PluginAdapter | undefined {
   return pluginAdapters.find((a) => a.id === id);
 }
 
-function keyOf(p: PluginRecord): string {
-  return p.marketplace ? `${p.name}@${p.marketplace}` : p.name;
-}
-
-function indexByKey(plugins: PluginRecord[]): Map<string, PluginRecord> {
+// Cross-agent identity is the BARE plugin name, not name@marketplace. The
+// marketplace tag is agent-local: the same upstream plugin is "forsvn-skills@
+// forsvn-skills" in Claude but "forsvn-skills@plugins-cli" in Codex. Keying on
+// the tag would treat every such plugin as missing and queue a spurious re-add.
+function indexByName(plugins: PluginRecord[]): Map<string, PluginRecord> {
   const m = new Map<string, PluginRecord>();
-  for (const p of plugins) m.set(keyOf(p), p);
+  for (const p of plugins) m.set(p.name, p);
   return m;
 }
 
@@ -86,7 +84,7 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
   }
   if (opts.removeStale && fromRead.plugins.length === 0) {
     throw new Error(
-      `mirror: refusing --remove-stale because primary ${opts.from} reports zero plugins — that would wipe every other agent. If you really want to clear all plugins, use \`syncthis plugin rm --all\` explicitly.`,
+      `mirror: refusing --remove-stale because primary ${opts.from} reports zero plugins — that would uninstall every plugin from the other agent. If you really want to clear them, uninstall directly with that agent's CLI (\`claude plugin uninstall\` / \`codex plugin remove\`).`,
     );
   }
   const targets: MirrorTarget[] = [];
@@ -95,63 +93,37 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     if (a.id === primary.id) continue;
     const toRead = await a.read();
 
-    if (a.pluginKind !== primary.pluginKind) {
-      targets.push({
-        to: a.id,
-        toRead,
-        diff: null,
-        unsupportedReason: `kind mismatch: primary is ${primary.pluginKind}, target is ${a.pluginKind} (npm plugins do not translate to bundle plugins)`,
-      });
-      continue;
-    }
-
     if (toRead.error) {
       targets.push({ to: a.id, toRead, diff: null, unsupportedReason: `cannot read target: ${toRead.error}` });
       continue;
     }
 
-    const fromIdx = indexByKey(fromRead.plugins);
-    const toIdx = indexByKey(toRead.plugins);
+    const fromIdx = indexByName(fromRead.plugins);
+    const toIdx = indexByName(toRead.plugins);
 
-    const canInstall = !!a.installPlugin;
-    const canRemove = !!a.removePlugin;
-
-    // Only propose installs the target can actually perform. A bundle-kind agent
-    // without an install primitive (e.g. Cursor) must NOT show `add` entries in
-    // the preview — apply would silently drop them, so a confirmed diff that
-    // listed them would lie about what will happen.
     const add: PluginRecord[] = [];
-    let skippedInstalls = 0;
-    for (const [k, p] of fromIdx) {
-      if (toIdx.has(k)) continue;
-      if (canInstall) add.push(p);
-      else skippedInstalls += 1;
-    }
+    for (const [name, p] of fromIdx) if (!toIdx.has(name)) add.push(p);
 
     const remove: PluginRecord[] = [];
-    if (opts.removeStale && canRemove) {
-      for (const [k, p] of toIdx) if (!fromIdx.has(k)) remove.push(p);
+    if (opts.removeStale) {
+      for (const [name, p] of toIdx) if (!fromIdx.has(name)) remove.push(p);
     }
 
     const target: MirrorTarget = { to: a.id, toRead, diff: { add, remove } };
-    if (skippedInstalls > 0) {
-      target.unsupportedReason = `${a.id} has no install primitive — ${skippedInstalls} plugin(s) cannot be pushed${
-        opts.removeStale && canRemove ? " (stale removals still apply)" : ""
-      }`;
-    }
 
     if (opts.apply) {
-      if (a.installPlugin) {
-        const installs: PluginInstallResult[] = [];
-        for (const p of add) {
-          installs.push(await a.installPlugin(p.name, { dryRun: false, marketplace: p.marketplace }));
-        }
-        target.installs = installs;
+      // Install by bare name and let the target resolve its own marketplace —
+      // the primary's marketplace tag won't exist on the target. removePlugin
+      // re-resolves the target's own tag from its config.
+      const installs: PluginInstallResult[] = [];
+      for (const p of add) {
+        installs.push(await a.installPlugin(p.name, { dryRun: false }));
       }
-      if (opts.removeStale && a.removePlugin) {
+      target.installs = installs;
+      if (opts.removeStale) {
         const removes: PluginRemoveResult[] = [];
         for (const p of remove) {
-          removes.push(await a.removePlugin(keyOf(p), { dryRun: false, prune: true }));
+          removes.push(await a.removePlugin(p.name, { dryRun: false, prune: true }));
         }
         target.removes = removes;
       }

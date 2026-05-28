@@ -1,22 +1,18 @@
 import { intro, outro, select, isCancel, cancel, log } from "@clack/prompts";
 import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
-import { buildStatusReport, cellGlyph } from "./plugins/status.ts";
 import { runMirror, mirrorHasChanges } from "./plugins/mirror.ts";
-import { listPlugins, runPluginDoctor } from "./plugin-doctor.ts";
-import { pluginAdapters } from "./plugins/index.ts";
+import { listPlugins, pluginAdapters } from "./plugins/index.ts";
 import type { AgentId } from "./types.ts";
 
 type PickerChoice =
   | "sync"
   | "mcp"
   | "skills"
-  | "status"
   | "mirror"
   | "directional"
   | "doctor"
   | "plugin-list"
-  | "plugin-doctor"
   | "quit";
 
 export async function showInteractivePicker(): Promise<void> {
@@ -28,12 +24,10 @@ export async function showInteractivePicker(): Promise<void> {
       { value: "sync", label: "sync — MCP union + skills (all agents)" },
       { value: "mcp", label: "mcp — MCP union only (no skills)" },
       { value: "skills", label: "skills — `npx skills update -y`" },
-      { value: "status", label: "status — plugin × agent matrix (find silent failures)" },
-      { value: "mirror", label: "mirror — destructive plugin push from one primary → all" },
+      { value: "mirror", label: "mirror — push one agent's plugins onto the other (claude ↔ codex)" },
       { value: "directional", label: "directional — one-way MCP mirror between two agents" },
       { value: "doctor", label: "doctor — MCP coverage + conflicts" },
       { value: "plugin-list", label: "plugin list — what's installed per agent" },
-      { value: "plugin-doctor", label: "plugin doctor — plugin/marketplace coverage" },
       { value: "quit", label: "quit" },
     ],
   })) as PickerChoice | symbol;
@@ -54,9 +48,6 @@ export async function showInteractivePicker(): Promise<void> {
       case "skills":
         await doSkills();
         break;
-      case "status":
-        await doStatus();
-        break;
       case "mirror":
         await doMirror();
         break;
@@ -68,9 +59,6 @@ export async function showInteractivePicker(): Promise<void> {
         break;
       case "plugin-list":
         await doPluginList();
-        break;
-      case "plugin-doctor":
-        await doPluginDoctor();
         break;
     }
   } catch (err) {
@@ -101,29 +89,6 @@ async function doSkills() {
   const r = await runSkillsOnly();
   if (r.ok) log.success("skills: npx skills update -y");
   else log.error(`skills: ${r.message ?? "failed"}`);
-}
-
-async function doStatus() {
-  const report = await buildStatusReport();
-  if (report.rows.length === 0) {
-    log.info("no plugins installed in any tracked agent.");
-    return;
-  }
-  let silent = 0;
-  let ok = 0;
-  for (const row of report.rows) {
-    for (const c of row.cells) {
-      const g = cellGlyph(c);
-      if (g === "silent" || g === "error") silent += 1;
-      else if (g === "surfaced") ok += 1;
-    }
-  }
-  log.success(`${ok} plugin/agent pair(s) surfacing`);
-  if (silent > 0) {
-    log.warn(`${silent} silent failure(s) — run \`syncthis status\` for the full matrix`);
-  } else {
-    log.success("no silent failures detected.");
-  }
 }
 
 async function doMirror() {
@@ -203,16 +168,6 @@ async function doPluginList() {
     if (r.error) log.error(`${r.agent}: ${r.error}`);
     else if (!r.exists) log.info(`${r.agent}: no config`);
     else log.success(`${r.agent}: ${r.plugins.length} plugin(s)`);
-  }
-}
-
-async function doPluginDoctor() {
-  const r = await runPluginDoctor();
-  const bundle = r.pluginCoverage.bundle.length;
-  const npm = r.pluginCoverage.npm.length;
-  log.success(`${bundle} bundle plugin(s), ${npm} npm plugin(s) tracked`);
-  if (r.marketplaceConflicts.length) {
-    log.warn(`${r.marketplaceConflicts.length} marketplace conflict(s) — run \`syncthis plugin doctor\` for detail`);
   }
 }
 

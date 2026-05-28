@@ -14,12 +14,12 @@ interface CommandRow {
 
 const COMMANDS: CommandRow[] = [
   { cmd: "syncthis sync", desc: "MCP union + skills (all agents)" },
-  { cmd: "syncthis status", desc: "plugin × agent matrix — find silent failures" },
-  { cmd: "syncthis mirror <primary>", desc: "destructive plugin push from primary → all" },
   { cmd: "syncthis mcp / skills", desc: "MCP-only or skills-only sync" },
   { cmd: "syncthis <from> <to>", desc: "one-way MCP mirror between two agents" },
   { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
-  { cmd: "syncthis doctor", desc: "coverage + conflict report" },
+  { cmd: "syncthis mirror <primary>", desc: "push plugins from primary (claude ↔ codex)" },
+  { cmd: "syncthis plugin list", desc: "list installed plugins per agent" },
+  { cmd: "syncthis doctor", desc: "MCP coverage + conflict report" },
   { cmd: "syncthis help", desc: "full help text" },
 ];
 

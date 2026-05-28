@@ -8,11 +8,15 @@
 
 ![syncthis run mirroring MCP servers across 11 agents](./assets/demo.gif)
 
-**One CLI to keep MCP servers, plugins, and marketplaces synced across your AI coding agents.**
+**One CLI to keep MCP servers in sync across your AI coding agents — plus a plugin mirror and skills delegation.**
 
-You install MCPs and plugins with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, and so on. syncthis is the sync layer on top: read every agent's config, compute the union, write it back, and report conflicts.
+You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
-Supported agents: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total for MCP sync. The plugin surface — observability (`status`), mirror, and marketplace removal — covers Claude Code, Codex, Cursor, and OpenCode (new in v0.4). Skills are delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills), which handles 55 agents.
+- **MCP servers** — union sync across all 11 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
+- **Plugins** — `mirror` one agent's installed plugins onto another. Limited to the two agents with a native install CLI: **Claude Code ↔ Codex**.
+- **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
+
+Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total.
 
 ## Quick start
 
@@ -42,7 +46,8 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
-| ✅ removes plugins and marketplaces across Claude / Codex / Cursor / OpenCode | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ mirrors plugins from one agent to another (Claude ↔ Codex) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ lists installed plugins per agent (`plugin list`) | ❌ uninstalls plugins (use `claude plugin uninstall`, `codex plugin remove`) |
 
 ## How it works
 
@@ -71,30 +76,19 @@ syncthis skills                             # skills only — `npx skills update
 syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
 syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
-syncthis doctor                             # coverage + conflict report
+syncthis doctor                             # MCP coverage + conflict report
 
-# Plugin observability + mirror (Claude, Codex, Cursor, OpenCode)
-syncthis status [--detailed] [--json]       # plugin × agent × stage matrix, with silent-failure reasons
-syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run] # install primary's plugins everywhere
-
-# Plugin and marketplace inspection / removal (Claude, Codex, Cursor, OpenCode)
-syncthis plugin list                        # list installed plugins per agent
-syncthis plugin doctor                      # plugin + marketplace coverage report
-syncthis plugin rm <name> --all [--yes] [--dry-run] [--purge]
-syncthis plugin rm --marketplace <name> --all [--yes] [--dry-run] [--purge]
-syncthis marketplace list                   # list registered marketplaces per agent
-syncthis marketplace rm <name> --all [--yes] [--dry-run] [--purge]
+# Plugins (Claude ↔ Codex)
+syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agent
+syncthis plugin list                        # list installed plugins per agent (read-only)
 syncthis help
 ```
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
-`--detailed` (status) exposes the per-agent source tag (e.g. `forsvn-skills@plugins-cli`).
-`--remove-stale` (mirror) also uninstalls plugins on secondaries that the primary doesn't have.
+`--remove-stale` (mirror) also uninstalls plugins on the target that the primary doesn't have.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
-`--purge` (plugin / marketplace rm) also sweeps on-disk cache dirs the agent leaves behind.
-`--marketplace <name>` (plugin rm) removes every plugin that came from a marketplace.
 
 ## Supported agents
 
@@ -163,53 +157,25 @@ syncthis rm executor --all --yes
 
 `syncthis run` is a union sync. If `executor` still exists in one agent, union sync will re-propagate it. `syncthis rm` avoids that by deleting the named server from every supported agent in one pass.
 
-## Plugin status and mirror
+## Plugins
 
-`syncthis status` reports, per plugin × agent, where each plugin sits in its lifecycle — **registered** (in the agent's config), **loaded** (cache materialized + manifest parses), and **surfaced** (the agent will actually pick up its skills) — across **Claude Code, Codex, Cursor, and OpenCode**. It flags genuine "registered but not surfaced" cases with a reason (e.g. missing cache dir, disabled, missing manifest).
-
-The Codex lifecycle is modeled on Codex's real loader (`codex-rs/core-skills/src/loader.rs`): it reads `.codex-plugin/plugin.json`, takes its `skills` field as a root, and recursively scans it (depth ≤ 6, following symlinks) for `SKILL.md`. Nested `skills/<category>/<skill>/` layouts surface fine — syncthis reports exactly what Codex sees, not a heuristic guess.
+Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. They're only portable between agents that expose a native install CLI, which today means **Claude Code (`claude plugin install`) and Codex (`codex plugin add`)**. So syncthis does exactly two plugin things: list what's installed, and mirror one of those two agents onto the other.
 
 ```bash
-# Per plugin × agent: registered / loaded / surfaced, with a reason for each silent failure
-syncthis status
-syncthis status --detailed        # also shows the per-agent source tag (forsvn-skills@plugins-cli)
-syncthis status --json            # machine-readable matrix
+# See what's installed where (read-only)
+syncthis plugin list
 
-# Make one agent the source of truth: install its plugins on every other agent
+# Make one agent the source of truth: install its plugins on the other
 syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
 syncthis mirror claude-code --remove-stale --yes   # also uninstall plugins the primary doesn't have
 ```
 
-`mirror` is destructive — it overwrites each secondary agent's plugin set with the primary's, so it shows a diff and prompts for confirmation (or pass `--yes`). It refuses cross-`kind` targets (a GitHub-bundle primary won't mirror into OpenCode's npm-module cohort) and skips agents with no native install path (Cursor), reporting why.
+`mirror` is destructive — it installs the primary's plugins onto the target (and with `--remove-stale`, uninstalls what the primary doesn't have). It shows a diff and prompts for confirmation unless you pass `--yes`. Installs delegate to the target's native CLI; nothing is written directly to a plugin cache.
 
-## Plugins and marketplaces
+Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`).
 
-syncthis can inspect and remove plugins (and their source marketplaces) across **Claude Code, Codex, Cursor, and OpenCode**. Installation is left to each agent's native tool (`claude plugin install`, `codex plugin add`, `npx plugins add`, `opencode plugin <module>`).
-
-```bash
-# See what's installed where
-syncthis plugin list
-syncthis plugin doctor
-syncthis marketplace list
-
-# Remove one plugin everywhere (handles per-agent marketplace suffix mismatches)
-syncthis plugin rm vercel-plugin --all --dry-run
-syncthis plugin rm vercel-plugin --all --yes
-
-# Remove every plugin that came from a marketplace, in one pass
-syncthis plugin rm --marketplace knowledge-work-plugins --all --yes --purge
-
-# Drop a marketplace registration entirely + sweep its on-disk cache
-syncthis marketplace rm knowledge-work-plugins --all --yes --purge
-```
-
-`--purge` also `rm -rf`'s the on-disk cache directories the agent leaves behind after a registration-only uninstall (Claude leaves `~/.claude/plugins/cache/<marketplace>/<plugin>/`, Codex leaves `~/.codex/plugins/cache/<source>/<plugin>/`). Containment-checked with `realpath` — refuses to delete anything outside the agent's plugins tree.
-
-**Scope notes:**
-- **Cursor** has no native plugin/marketplace CLI, so syncthis works file-level on `~/.cursor/plugins/`.
-- **OpenCode** plugins are npm runtime modules listed in `opencode.json`'s `plugin` array, NOT GitHub-bundle plugins like the other three. They live in their own cohort — `plugin list` shows them, removal works on the npm-name, but they never cross-mirror into Claude/Codex/Cursor.
-- The other 7 supported agents (Gemini, Kimi, Hermes, Windsurf, Antigravity, Copilot, OpenClaw) stay in MCP-sync and skills scope only — they have no GitHub-bundle plugin surface for syncthis to manage.
+**Why not the other agents?** Cursor has no plugin install CLI, and OpenCode plugins are npm runtime modules (a different format) — neither can be a mirror target. The remaining 7 agents have no GitHub-bundle plugin surface at all. They all stay in MCP-sync + skills scope.
 
 ## Desktop-owned servers
 

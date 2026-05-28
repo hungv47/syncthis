@@ -9,7 +9,12 @@ Guidance for Claude Code working in this repo. Mirrored to `AGENTS.md` for Codex
 
 It is a sync layer, not an installer — it reads each agent's existing config, computes the union, writes the union back, and reports conflicts.
 
-For **skills**, syncthis delegates entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills`), which supports 55 agents. syncthis just shells out to `npx skills update -y` after MCP sync.
+It does exactly three things, deliberately kept minimal:
+- **MCP servers** — cross-agent union sync (the unique core; no upstream tool does this).
+- **Plugins** — `mirror` one agent's plugins onto another, limited to the two agents with a native install CLI: **Claude Code ↔ Codex**. Plus read-only `plugin list`. Plugins are installed artifact bundles, not portable config records, so the cohort can't be widened without an install CLI per agent.
+- **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills`), which supports 55 agents. syncthis just shells out to `npx skills update -y` after MCP sync.
+
+A v0.4 plugin observability layer (`status`) and removal subsystem (`plugin rm` / `marketplace rm`) were removed in 0.5 — the observability premise (Codex silently drops nested-skill plugins) turned out fictional, and uninstalling is each agent's own concern. Don't reintroduce them without a concrete, verified need.
 
 Distribution: npm package `@hungv47/syncthis`.
 
@@ -38,43 +43,56 @@ src/
     openclaw.ts       → ~/.openclaw/openclaw.json (JSON5; nested `mcp.servers`; transport field)
     hermes.ts         → ~/.hermes/config.yaml (YAML; mcp_servers snake_case)
     json-mcp.ts       → shared canonical JSON adapter factory (Cursor, Gemini, Kimi, Antigravity)
-    index.ts          → adapter registry (all 11)
-  sync.ts             → core: read all → compute union → write back, plus runDirectional
-  doctor.ts           → coverage + conflict report
-  tui.ts              → first-run welcome + interactive picker (@clack/prompts)
+    text-mcp.ts       → shared text-format adapter factory
+    index.ts          → MCP adapter registry (all 11)
+  plugins/            → plugin layer (claude ↔ codex only)
+    claude.ts         → read (claude plugin list --json) + installPlugin + removePlugin
+    codex.ts          → read (config.toml [plugins.*]) + installPlugin + removePlugin
+    mirror.ts         → primary → other plugin agent: diff installs/removes, --remove-stale guard
+    shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier
+    types.ts          → PluginAdapter interface + records
+    index.ts          → plugin cohort registry ([claude, codex]) + listPlugins()
+  sync.ts             → core: read all → compute union → write back, plus runDirectional / runFanOut / runRemove
+  doctor.ts           → MCP coverage + conflict report
+  tui.ts              → interactive picker (@clack/prompts)
+  welcome.tsx         → first-run ink banner
   io.ts               → readJson/writeJson/readText/writeText, 0600 perms, .syncthis.bak
-  types.ts            → shared types (AgentId union)
+  types.ts            → shared MCP types (AgentId union)
 bin/
   syncthis.ts         → CLI entrypoint (parsed by bun)
   syncthis.mjs        → npm bin shim (spawns bun on the .ts entry)
-tests/
-  sync.test.ts        → union, conflicts, all-format round-trip, backups, dry-run, idempotence,
-                        Claude per-project scope merge, runDirectional diff
+tests/                → sync, adapters, mirror, plugin-adapters, plugin-install
 .deepsec/             → self-contained deepsec scanner config (its own package.json + lockfile)
 ```
 
 ## Commands
 
 ```
-syncthis                              # interactive picker (or HELP if non-TTY)
-syncthis run    [--dry-run] [--no-skills]   # MCP + skills (alias for sync)
+syncthis                                 # interactive picker (or HELP if non-TTY)
+syncthis run    [--dry-run] [--no-skills]    # MCP union + skills (alias for sync)
 syncthis sync   [--dry-run] [--no-skills]
-syncthis mcp    [--dry-run]                 # MCP only
-syncthis skills                             # skills only — `npx skills update -y`
-syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror
-syncthis doctor
+syncthis mcp    [--dry-run]                  # MCP only
+syncthis skills                              # skills only — `npx skills update -y`
+syncthis <from> <to> [--yes] [--dry-run]     # one-way MCP mirror A → B
+syncthis from <agent> --all [--yes] [--dry-run]   # fan one agent out to all others
+syncthis rm <server> --all [--yes] [--dry-run]    # remove one MCP server everywhere
+syncthis doctor                              # MCP coverage + conflicts
+syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run]  # plugin mirror (claude ↔ codex)
+syncthis plugin list                         # read-only plugin inventory
 syncthis help
 ```
 
 `run`/`sync` does, in order: read all 11 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → run `npx skills update -y` unless `--no-skills`.
 
-`<from> <to>` is a destructive one-way mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
+`<from> <to>` is a destructive one-way MCP mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
+
+`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agent via its native CLI; `--remove-stale` also uninstalls what the primary lacks. Diff + confirm or `--yes`.
 
 `doctor` prints per-server coverage across agents and any conflicts. Exits non-zero if conflicts present.
 
 ## Sacred elements — do not change without explicit approval
 
-1. **Removal is allowed only with explicit rails.** Union `sync` never deletes — it is purely additive. Removal commands (`syncthis rm`, `syncthis plugin rm`, `syncthis marketplace rm`) must require (a) an explicit scope flag (`--all` or `--agents <id,id,...>`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` available to preview. There is no implicit deletion anywhere in the tool.
+1. **Removal is allowed only with explicit rails.** Union `sync` never deletes — it is purely additive. The MCP removal command (`syncthis rm`) must require (a) an explicit scope flag (`--all`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` available to preview. The plugin `mirror --remove-stale` path follows the same diff + confirm rule and refuses to run when the primary read-errored or reports zero plugins (which would otherwise wipe the target). There is no implicit deletion anywhere in the tool.
 2. **`.syncthis.bak` backup on first write.** Every target file gets a backup the first time syncthis writes to it. Tests assert this. Don't change the contract or the suffix.
 3. **Conflict policy (union sync): leave each agent's own copy untouched.** If the same server name has different configs in different agents (different env, command, args), `run`/`sync` does NOT pick a winner — it leaves each agent's existing version alone and reports the conflict. The user resolves by deleting the version they don't want and re-running sync.
 4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 11 adapters.
@@ -83,7 +101,7 @@ syncthis help
 
 ## Distribution
 
-- **npm:** `@hungv47/syncthis` (current: `0.4.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet.
+- **npm:** `@hungv47/syncthis` (current: `0.5.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet.
 - **Install:** `bun install -g @hungv47/syncthis` or `npm install -g @hungv47/syncthis`.
 - **The `.mjs` bin shim is intentional** — see Stack note above. Don't try to point `bin` directly at a `.ts` file or a path with leading `./`.
 

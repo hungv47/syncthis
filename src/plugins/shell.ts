@@ -1,5 +1,3 @@
-import { realpath, rm, stat } from "node:fs/promises";
-
 export type ShellResult = {
   ok: boolean;
   exitCode: number;
@@ -53,11 +51,8 @@ export function parsePluginId(id: string): { name: string; marketplace?: string 
   return { name: id.slice(0, at), marketplace: id.slice(at + 1) };
 }
 
-// Plugin / marketplace names that may flow into path construction must be flat
-// identifiers — no path separators, no traversal, no NUL. This is enforced BEFORE
-// any join() so that even though safeRmUnder catches escape outside the anchor,
-// a name like "../cache/sibling" cannot redirect deletion to a sibling subtree
-// inside the same anchor.
+// Plugin / marketplace names that flow into a CLI invocation must be flat
+// identifiers — no path separators, no traversal, no NUL.
 export function isSafeIdentifier(name: string): boolean {
   if (!name) return false;
   if (name.includes("/") || name.includes("\\") || name.includes("\0")) return false;
@@ -70,52 +65,4 @@ export function assertSafeIdentifier(name: string, label = "name"): void {
   if (!isSafeIdentifier(name)) {
     throw new Error(`${label} contains unsafe characters or path traversal: ${JSON.stringify(name)}`);
   }
-}
-
-// Containment-checked rm -rf. Resolves both target and anchor via realpath, then
-// refuses to delete anything that doesn't sit under anchor. Returns {removed, message}.
-// Missing target → {removed: false, message: "absent"}. Used for --purge sweeps where
-// we MUST never escape the agent's plugins/cache tree.
-//
-// TOCTOU note: we realpath both sides, verify containment, then rm the CANONICAL
-// target (not the original path). This closes a window where a path component
-// could be swapped to a symlink between check and rm.
-export async function safeRmUnder(
-  target: string,
-  anchor: string,
-): Promise<{ removed: boolean; message?: string }> {
-  let canonicalAnchor: string;
-  try {
-    canonicalAnchor = await realpath(anchor);
-  } catch (err) {
-    if ((err as { code?: string }).code === "ENOENT") {
-      return { removed: false, message: "anchor missing" };
-    }
-    return { removed: false, message: `anchor unresolvable: ${(err as Error).message}` };
-  }
-  let canonicalTarget: string;
-  try {
-    canonicalTarget = await realpath(target);
-  } catch (err) {
-    if ((err as { code?: string }).code === "ENOENT") {
-      return { removed: false, message: "absent" };
-    }
-    return { removed: false, message: `target unresolvable: ${(err as Error).message}` };
-  }
-  if (canonicalTarget === canonicalAnchor) {
-    return { removed: false, message: "refusing to delete anchor itself" };
-  }
-  if (!canonicalTarget.startsWith(`${canonicalAnchor}/`)) {
-    return { removed: false, message: `outside anchor (${canonicalAnchor}): ${canonicalTarget}` };
-  }
-  try {
-    const info = await stat(canonicalTarget);
-    if (!info.isDirectory()) {
-      return { removed: false, message: "not a directory" };
-    }
-  } catch (err) {
-    return { removed: false, message: (err as Error).message };
-  }
-  await rm(canonicalTarget, { recursive: true, force: true });
-  return { removed: true };
 }

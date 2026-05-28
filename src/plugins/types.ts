@@ -2,10 +2,6 @@ import type { AgentId } from "../types.ts";
 
 // A plugin name as understood by the agent.
 // For Claude/Codex: bare name plus optional @marketplace (e.g. "vercel-plugin@plugins-cli").
-// For Cursor: directory name under ~/.cursor/plugins/<scope>/ (may include owner prefix).
-// For OpenCode: npm package specifier ("@scope/pkg" or "pkg").
-export type PluginKind = "bundle" | "npm";
-
 export type PluginRecord = {
   name: string;
   marketplace?: string;
@@ -13,35 +9,19 @@ export type PluginRecord = {
   enabled?: boolean;
   scope?: string;
   path?: string;
-  kind: PluginKind;
-};
-
-export type MarketplaceSourceType = "git" | "local" | "github" | "unknown";
-
-export type MarketplaceRecord = {
-  name: string;
-  source: string;
-  sourceType: MarketplaceSourceType;
 };
 
 export type PluginAdapterRead = {
   agent: AgentId;
   configPath: string;
   exists: boolean;
-  supportsPlugins: boolean;
-  supportsMarketplaces: boolean;
-  pluginKind: PluginKind;
   plugins: PluginRecord[];
-  marketplaces: MarketplaceRecord[];
   error?: string;
 };
 
 export type PluginRemoveOpts = {
   dryRun: boolean;
   prune?: boolean;
-  // When true, also rm -rf the on-disk cache directory(ies) that the agent
-  // leaves behind after a registration-only uninstall. Off by default.
-  purge?: boolean;
 };
 
 export type RemoveStatus = "removed" | "absent" | "skipped" | "failed";
@@ -69,13 +49,11 @@ export type PluginInstallResult = {
 
 export interface PluginAdapter {
   id: AgentId;
-  pluginKind: PluginKind;
-  supportsMarketplaces: boolean;
   configPath(): string;
   read(): Promise<PluginAdapterRead>;
-  removePlugin?(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult>;
-  removeMarketplace?(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult>;
-  // Mirror layer (Phase 2). Optional — agents without a usable install pathway
-  // (currently Cursor — no native CLI) will simply be skipped by `mirror`.
-  installPlugin?(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult>;
+  // Mirror layer. installPlugin pushes primary's plugins onto a target;
+  // removePlugin backs the `--remove-stale` path. Both are required: only agents
+  // with a native install CLI are in the cohort, so every member can do both.
+  installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult>;
+  removePlugin(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult>;
 }
