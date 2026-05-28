@@ -79,13 +79,14 @@ syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhe
 syncthis doctor                             # MCP coverage + conflict report
 
 # Plugins (Claude ↔ Codex)
-syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agent
+syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agent
 syncthis plugin list                        # list installed plugins per agent (read-only)
 syncthis help
 ```
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
+`--provision` (mirror) registers a plugin's source marketplace on the target before installing, when the target doesn't already have it (shells `npx plugins add` — hits the network).
 `--remove-stale` (mirror) also uninstalls plugins on the target that the primary doesn't have.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
@@ -168,10 +169,18 @@ syncthis plugin list
 # Make one agent the source of truth: install its plugins on the other
 syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
+syncthis mirror claude-code --provision --yes      # also register missing marketplaces on the target first
 syncthis mirror claude-code --remove-stale --yes   # also uninstall plugins the primary doesn't have
 ```
 
 `mirror` is destructive — it installs the primary's plugins onto the target (and with `--remove-stale`, uninstalls what the primary doesn't have). It shows a diff and prompts for confirmation unless you pass `--yes`. Installs delegate to the target's native CLI; nothing is written directly to a plugin cache.
+
+`mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and won't skip plugins the target only *appears* to have. It resolves each plugin to the target's own `<name>@<marketplace>` automatically.
+
+A plugin the target can't install is reported as **skipped** with a reason, not a failure — the run only exits non-zero on a genuine install error. Two common skips:
+
+- **Marketplace not registered on the target.** Add `--provision` and syncthis will register the plugin's source repo for you (`npx plugins add <owner/repo> --target codex`, repo read from the primary's marketplace list) and then install it. Off by default to keep `mirror` fast and local.
+- **Skills-only bundles.** Some "plugins" are really skill collections; they sync as skills, not Codex plugins. `mirror` points you to `syncthis run` (which runs `npx skills update -y`) for those.
 
 Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`).
 

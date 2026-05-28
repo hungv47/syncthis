@@ -2,6 +2,33 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.6.0] — 2026-05-28
+
+Make the Claude → Codex plugin mirror actually install everything it can, and be honest about what it can't.
+
+### Added
+- `syncthis mirror <primary> --provision` (opt-in) — when Codex has no registered marketplace for one of the primary's plugins, syncthis registers the plugin's source repo for you (`npx plugins add <owner/repo> --target codex`, repo resolved from the primary's marketplace list) and then installs it natively. Turns "not available in Codex" plugins into installed ones in a single command. Off by default so plain `mirror` stays fast and local; also offered as a prompt in the interactive picker.
+- After a mirror with skips, a one-line hint that skipped **skills-only bundles** sync via `syncthis run` (`npx skills`), not the plugin mirror — so nothing looks lost.
+
+### Changed
+- Plugins the target genuinely can't install are now reported as **skipped** with a reason, not **failed**. Only a real install error counts as a failure (non-zero exit). Three distinct skip reasons: provisioned-but-unresolvable (a skills-only bundle, or an upstream multi-plugin-repo snapshot defect), no-usable-source-repo, and no-`--provision`. Summary reads `N installed · M skipped · K failed`.
+
+### Security
+- `--provision` validates the `owner/repo` slug before shelling out: rejects leading dashes (CLI option injection), `..` traversal, URLs, and shell metacharacters; subprocess args are passed array-style (no shell). `marketplaceSources()` tolerates malformed CLI JSON instead of aborting the run.
+
+## [0.5.2] — 2026-05-28
+
+### Changed
+- `syncthis mirror` reports a plugin the target can't resolve as **skipped** (with a reason) instead of **failed** — a run no longer looks broken when a plugin's marketplace simply isn't available on the target. Only genuine install errors exit non-zero.
+
+## [0.5.1] — 2026-05-28
+
+Codex plugin sync now reflects reality.
+
+### Fixed
+- The Codex adapter read install state from `~/.codex/config.toml`, which records plugins merely *registered* out-of-band — so syncthis over-reported Codex (≈50 "installed" vs ~4 actually loaded) and `mirror` skipped plugins as already-present that Codex couldn't use. It now reads true install state from `codex plugin list`, so both `plugin list` and `mirror` reflect what Codex actually has.
+- `codex plugin add` rejects a bare plugin name. `mirror` now resolves the target's own `<name>@<marketplace>` from Codex's snapshot (preferring `plugins-cli` when a name is ambiguous), so installs land instead of erroring.
+
 ## [0.5.0] — 2026-05-28
 
 Minimal-tool refactor. syncthis now does exactly three things: cross-agent **MCP union sync** (its unique value — nothing upstream does it), **plugin mirror** between the two agents with a native install CLI (Claude ↔ Codex), and **skills** delegated to `npx skills update -y`.
