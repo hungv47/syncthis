@@ -162,11 +162,20 @@ export const codexPluginAdapter: PluginAdapter = {
         if (prov.notFound) {
           return { agent: "codex", target: name, status: "skipped", message: "cannot provision — `npx plugins` not found" };
         }
-        provisioned = prov.ok;
-        if (prov.ok) {
-          const reRead = await run("codex", ["plugin", "list"]);
-          if (reRead.ok) candidates = marketplacesFor(parseCodexListRows(reRead.stdout || ""), name);
+        if (!prov.ok) {
+          // The provision we were explicitly asked to do actually errored (bad
+          // repo, network, auth, timeout) — surface the cause as a real failure,
+          // not a benign skip, so it exits non-zero instead of looking like a no-op.
+          return {
+            agent: "codex",
+            target: name,
+            status: "failed",
+            message: `provision failed (npx plugins add ${opts.sourceRepo}): ${prov.stderr.trim() || `exit ${prov.exitCode}`}`,
+          };
         }
+        provisioned = true;
+        const reRead = await run("codex", ["plugin", "list"]);
+        if (reRead.ok) candidates = marketplacesFor(parseCodexListRows(reRead.stdout || ""), name);
       }
 
       if (candidates.length === 1) {

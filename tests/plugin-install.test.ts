@@ -80,7 +80,7 @@ function codexListTable(rows: CodexRow[]): string {
 // Fakes for the --provision path: a `codex` whose `plugin list` gains the plugin
 // only AFTER fake `npx plugins add` drops a sentinel — exercising the
 // provision → re-read → install chain.
-async function installProvisionFakes(name: string) {
+async function installProvisionFakes(name: string, opts: { npxFail?: { exit: number; stderr: string } } = {}) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
   const sentinel = join(workDir, "provisioned");
@@ -104,9 +104,14 @@ exit 0
 `;
   await writeFile(join(binDir, "codex"), codex);
   await chmod(join(binDir, "codex"), 0o755);
+  // On `plugins add`: succeed (drop sentinel so the next `plugin list` shows it),
+  // or, when npxFail is set, emit stderr and exit non-zero without provisioning.
+  const addBranch = opts.npxFail
+    ? `echo "${opts.npxFail.stderr}" >&2; exit ${opts.npxFail.exit}`
+    : `touch ${sentinel}; exit 0`;
   const npx = `#!/bin/sh
 echo "npx $@" >> ${invocationsFile}
-if [ "$1 $2" = "plugins add" ]; then touch ${sentinel}; exit 0; fi
+if [ "$1 $2" = "plugins add" ]; then ${addBranch}; fi
 exit 0
 `;
   await writeFile(join(binDir, "npx"), npx);
@@ -255,6 +260,18 @@ describe("codex installPlugin", () => {
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
     expect(inv.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
+  });
+
+  test("provision: a failed `npx plugins add` is reported as failed with the cause", async () => {
+    await installProvisionFakes("foo", { npxFail: { exit: 1, stderr: "repo not found" } });
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
+    expect(res.status).toBe("failed");
+    expect(res.message).toContain("provision failed");
+    expect(res.message).toContain("repo not found");
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.startsWith("npx plugins add"))).toBe(true);
+    // must not attempt the native install after the provision errored
+    expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
   });
 
   test("provision: refuses an unsafe sourceRepo, never shells npx", async () => {
