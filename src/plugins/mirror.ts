@@ -46,6 +46,9 @@ export type MirrorRunOpts = {
   // When true, also remove plugins from targets that aren't in primary.
   // Default false — additive by default, destructive only when asked.
   removeStale?: boolean;
+  // When true, a target may register a missing marketplace before installing
+  // (Codex shells `npx plugins add <repo> --target codex`). Off by default.
+  provision?: boolean;
 };
 
 function adapterFor(id: AgentId): PluginAdapter | undefined {
@@ -87,6 +90,13 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
       `mirror: refusing --remove-stale because primary ${opts.from} reports zero plugins — that would uninstall every plugin from the other agent. If you really want to clear them, uninstall directly with that agent's CLI (\`claude plugin uninstall\` / \`codex plugin remove\`).`,
     );
   }
+  // For --provision: the primary's marketplace name → owner/repo, so a target
+  // can register a marketplace it lacks before installing. Fetched once.
+  let sources: Map<string, string> | undefined;
+  if (opts.provision && opts.apply && primary.marketplaceSources) {
+    sources = await primary.marketplaceSources();
+  }
+
   const targets: MirrorTarget[] = [];
 
   for (const a of pluginAdapters) {
@@ -117,7 +127,13 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
       // re-resolves the target's own tag from its config.
       const installs: PluginInstallResult[] = [];
       for (const p of add) {
-        installs.push(await a.installPlugin(p.name, { dryRun: false }));
+        installs.push(
+          await a.installPlugin(p.name, {
+            dryRun: false,
+            provision: opts.provision,
+            sourceRepo: p.marketplace ? sources?.get(p.marketplace) : undefined,
+          }),
+        );
       }
       target.installs = installs;
       if (opts.removeStale) {

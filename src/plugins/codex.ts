@@ -1,5 +1,5 @@
 import { expandHome } from "../io.ts";
-import { assertSafeIdentifier, parsePluginId, run } from "./shell.ts";
+import { assertSafeIdentifier, isSafeRepoSlug, parsePluginId, run } from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -91,6 +91,11 @@ export function parseCodexPluginList(text: string): PluginRecord[] {
     .map((r) => ({ name: r.name, marketplace: r.marketplace, version: r.version, enabled: r.enabled, path: r.path }));
 }
 
+// Distinct marketplaces in the snapshot that carry a plugin of this name.
+function marketplacesFor(rows: CodexListRow[], name: string): string[] {
+  return [...new Set(rows.filter((r) => r.name === name && r.marketplace).map((r) => r.marketplace as string))];
+}
+
 export const codexPluginAdapter: PluginAdapter = {
   id: "codex",
   configPath: resolvedConfigPath,
@@ -142,17 +147,43 @@ export const codexPluginAdapter: PluginAdapter = {
           message: `cannot resolve marketplace — codex plugin list failed: ${listRes.stderr.trim() || `exit ${listRes.exitCode}`}`,
         };
       }
-      const candidates = [...new Set(rows.filter((r) => r.name === name && r.marketplace).map((r) => r.marketplace as string))];
+      let candidates = marketplacesFor(rows, name);
+
+      // No marketplace yet, but with --provision we can register the plugin's
+      // source repo into Codex (via the open-plugin installer) and retry. After
+      // `npx plugins add` the plugin lands in the plugins-cli snapshot; re-read
+      // and re-resolve so the normal pick logic below picks it up.
+      let provisioned = false;
+      if (candidates.length === 0 && opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)) {
+        if (opts.dryRun) {
+          return { agent: "codex", target: `${name}@(${opts.sourceRepo})`, status: "installed", message: "dry-run (would provision)" };
+        }
+        const prov = await run("npx", ["plugins", "add", opts.sourceRepo, "--target", "codex", "-y"], { timeoutMs: 180_000 });
+        if (prov.notFound) {
+          return { agent: "codex", target: name, status: "skipped", message: "cannot provision — `npx plugins` not found" };
+        }
+        provisioned = prov.ok;
+        if (prov.ok) {
+          const reRead = await run("codex", ["plugin", "list"]);
+          if (reRead.ok) candidates = marketplacesFor(parseCodexListRows(reRead.stdout || ""), name);
+        }
+      }
+
       if (candidates.length === 1) {
         marketplace = candidates[0];
       } else if (candidates.length === 0) {
         // Not a failure — Codex simply has no marketplace that provides this
-        // plugin, so there is nothing to attempt. Skip with a reason.
+        // plugin, so there is nothing to attempt. Skip with a reason. If we
+        // actually provisioned and it still isn't resolvable, the repo didn't
+        // expose it for Codex (e.g. a multi-plugin repo's non-primary plugin —
+        // an upstream snapshot defect).
         return {
           agent: "codex",
           target: name,
           status: "skipped",
-          message: "no registered Codex marketplace provides it — add its marketplace first (codex plugin marketplace add ...)",
+          message: provisioned
+            ? "provisioned, but Codex's plugin system doesn't expose it — likely a skills-only bundle (synced via `syncthis run` → npx skills, not the plugin mirror) or a multi-plugin repo snapshot defect"
+            : "no registered Codex marketplace provides it — retry with --provision, or add its marketplace (codex plugin marketplace add ...)",
         };
       } else if (candidates.includes(PREFERRED_MARKETPLACE)) {
         // Ambiguous, but prefer plugins-cli — the npx-plugins ecosystem these

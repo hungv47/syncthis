@@ -77,6 +77,43 @@ function codexListTable(rows: CodexRow[]): string {
   return ["Marketplace `mkt`", "/x/marketplace.json", "", fmt(header), ...rows.map(fmt), ""].join("\n");
 }
 
+// Fakes for the --provision path: a `codex` whose `plugin list` gains the plugin
+// only AFTER fake `npx plugins add` drops a sentinel — exercising the
+// provision → re-read → install chain.
+async function installProvisionFakes(name: string) {
+  const binDir = join(workDir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const sentinel = join(workDir, "provisioned");
+  const absentFile = join(workDir, "codex-absent.txt");
+  const presentFile = join(workDir, "codex-present.txt");
+  await writeFile(absentFile, codexListTable([["other@plugins-cli", "not installed", "", "/cache/other"]]));
+  await writeFile(
+    presentFile,
+    codexListTable([
+      ["other@plugins-cli", "not installed", "", "/cache/other"],
+      [`${name}@plugins-cli`, "not installed", "", `/cache/${name}`],
+    ]),
+  );
+  const codex = `#!/bin/sh
+echo "codex $@" >> ${invocationsFile}
+if [ "$1 $2" = "plugin list" ]; then
+  if [ -f ${sentinel} ]; then cat ${presentFile}; else cat ${absentFile}; fi
+  exit 0
+fi
+exit 0
+`;
+  await writeFile(join(binDir, "codex"), codex);
+  await chmod(join(binDir, "codex"), 0o755);
+  const npx = `#!/bin/sh
+echo "npx $@" >> ${invocationsFile}
+if [ "$1 $2" = "plugins add" ]; then touch ${sentinel}; exit 0; fi
+exit 0
+`;
+  await writeFile(join(binDir, "npx"), npx);
+  await chmod(join(binDir, "npx"), 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+}
+
 describe("claude installPlugin", () => {
   test("returns 'present' when plugin is already installed, does NOT shell out", async () => {
     await installFakeCli("claude", JSON.stringify([{ id: "alpha@mkt", enabled: true }]));
@@ -208,5 +245,32 @@ describe("codex installPlugin", () => {
     expect(res.message).toContain("ambiguous across Codex marketplaces");
     const invocations = await readInvocations();
     expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
+  });
+
+  test("provision: registers the marketplace via npx plugins then installs", async () => {
+    await installProvisionFakes("foo");
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
+    expect(res.status).toBe("installed");
+    expect(res.target).toBe("foo@plugins-cli");
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
+  });
+
+  test("provision: refuses an unsafe sourceRepo, never shells npx", async () => {
+    await installProvisionFakes("foo");
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "../evil" });
+    expect(res.status).toBe("skipped");
+    const inv = await readInvocations();
+    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+  });
+
+  test("no --provision flag: stays skipped even with a sourceRepo", async () => {
+    await installProvisionFakes("foo");
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, sourceRepo: "acme/foo" });
+    expect(res.status).toBe("skipped");
+    expect(res.message).toContain("retry with --provision");
+    const inv = await readInvocations();
+    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
   });
 });

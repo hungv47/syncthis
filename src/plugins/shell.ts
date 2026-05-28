@@ -66,3 +66,13 @@ export function assertSafeIdentifier(name: string, label = "name"): void {
     throw new Error(`${label} contains unsafe characters or path traversal: ${JSON.stringify(name)}`);
   }
 }
+
+// A GitHub-style "owner/repo" slug, the only marketplace source we provision
+// from. Strict on purpose: rejects leading "-" (option injection into a CLI),
+// URLs, path traversal, and shell metacharacters. Args are passed array-style
+// (no shell), but this keeps an adversarial marketplace entry from being treated
+// as a flag or anything other than a plain repo.
+export function isSafeRepoSlug(s: string): boolean {
+  if (s.includes("..")) return false; // no relative/parent paths
+  return /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(s);
+}

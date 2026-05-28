@@ -77,7 +77,7 @@ syncthis <from> <to> [--yes] [--dry-run]     # one-way MCP mirror A → B
 syncthis from <agent> --all [--yes] [--dry-run]   # fan one agent out to all others
 syncthis rm <server> --all [--yes] [--dry-run]    # remove one MCP server everywhere
 syncthis doctor                              # MCP coverage + conflicts
-syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run]  # plugin mirror (claude ↔ codex)
+syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]  # plugin mirror (claude ↔ codex)
 syncthis plugin list                         # read-only plugin inventory
 syncthis help
 ```
@@ -86,7 +86,7 @@ syncthis help
 
 `<from> <to>` is a destructive one-way MCP mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
 
-`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agent via its native CLI; `--remove-stale` also uninstalls what the primary lacks. Diff + confirm or `--yes`.
+`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agent via its native CLI; `--remove-stale` also uninstalls what the primary lacks. Diff + confirm or `--yes`. `--provision` (opt-in) registers a plugin's source marketplace on the target before installing — Codex shells `npx plugins add <owner/repo> --target codex` (repo resolved from the primary's `marketplace list`), then `codex plugin add <name>@<marketplace>`. Skills-only bundles and multi-plugin-repo non-primary plugins still can't be installed as Codex plugins (the former sync via `npx skills`; the latter is an upstream snapshot defect) — both are reported as `skipped`, not failed.
 
 `doctor` prints per-server coverage across agents and any conflicts. Exits non-zero if conflicts present.
 

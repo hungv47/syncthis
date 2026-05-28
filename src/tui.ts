@@ -116,6 +116,19 @@ async function doMirror() {
   }
   const removeStale = staleRaw === "yes";
 
+  const provisionRaw = await select({
+    message: "provision missing marketplaces on the target? (--provision)",
+    options: [
+      { value: "no", label: "no — install only what the target can already resolve" },
+      { value: "yes", label: "yes — register missing marketplaces via npx plugins (network, slower)" },
+    ],
+  });
+  if (isCancel(provisionRaw)) {
+    cancel("aborted.");
+    return;
+  }
+  const provision = provisionRaw === "yes";
+
   const preview = await runMirror({ from: primary, apply: false, removeStale });
   if (!mirrorHasChanges(preview)) {
     log.success("nothing to do — all targets already match primary.");
@@ -142,7 +155,7 @@ async function doMirror() {
     cancel("aborted.");
     return;
   }
-  const applied = await runMirror({ from: primary, apply: true, removeStale });
+  const applied = await runMirror({ from: primary, apply: true, removeStale, provision });
   let installed = 0;
   let skipped = 0;
   let failed = 0;

@@ -26,10 +26,12 @@ usage:
   syncthis rm <server> --all [--yes] [--dry-run]
                                              remove one MCP server from every supported agent
   syncthis doctor                            MCP coverage + conflict report
-  syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run]
+  syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]
                                              destructive: install <primary>'s plugins on the
                                              other plugin agent. --remove-stale also uninstalls
-                                             plugins the primary doesn't have. (Claude ↔ Codex)
+                                             plugins the primary doesn't have. --provision
+                                             registers missing marketplaces via npx plugins.
+                                             (Claude ↔ Codex)
   syncthis plugin list                       list installed plugins per agent (read-only)
   syncthis help
 
@@ -53,6 +55,9 @@ flags:
   --all           required for fan-out and remove-all commands.
   --yes           skip confirmation prompt for destructive commands.
   --remove-stale  (mirror) also uninstall plugins the primary doesn't have.
+  --provision     (mirror) register a plugin's marketplace on the target via
+                  \`npx plugins add <repo> --target codex\` when it's missing,
+                  then install. Shells out and hits the network.
 
 removing a server: use \`syncthis rm <server> --all --dry-run\`, review the diff,
 then rerun with \`--yes\`. plain union sync will re-propagate a server if it
@@ -83,6 +88,7 @@ const OPTIONS = {
   yes: { type: "boolean", short: "y" },
   all: { type: "boolean" },
   "remove-stale": { type: "boolean" },
+  provision: { type: "boolean" },
 } as const;
 
 function parse(argv: string[]) {
@@ -131,6 +137,7 @@ async function cmdMirror(argv: string[]) {
   }
   const dryRun = !!values["dry-run"];
   const removeStale = !!values["remove-stale"];
+  const provision = !!values.provision;
 
   const preview = await runMirror({ from: from as AgentId, apply: false, removeStale });
   printMirrorPreview(preview);
@@ -142,8 +149,9 @@ async function cmdMirror(argv: string[]) {
     console.log(dim("dry-run — no changes applied."));
     return;
   }
+  if (provision) console.log(dim("--provision: will register missing marketplaces via `npx plugins add` (network)."));
   await confirmDestructive(!!values.yes);
-  const applied = await runMirror({ from: from as AgentId, apply: true, removeStale });
+  const applied = await runMirror({ from: from as AgentId, apply: true, removeStale, provision });
   printMirrorApplied(applied);
 }
 
