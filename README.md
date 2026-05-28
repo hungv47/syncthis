@@ -12,7 +12,7 @@
 
 You install MCPs and plugins with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, and so on. syncthis is the sync layer on top: read every agent's config, compute the union, write it back, and report conflicts.
 
-Supported agents: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total for MCP sync. The new plugin/marketplace surface (v0.3) covers Claude Code, Codex, Cursor, and OpenCode. Skills are delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills), which handles 55 agents.
+Supported agents: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total for MCP sync. The plugin surface — observability (`status`), mirror, and marketplace removal — covers Claude Code, Codex, Cursor, and OpenCode (new in v0.4). Skills are delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills), which handles 55 agents.
 
 ## Quick start
 
@@ -66,12 +66,16 @@ For removals, do not rely on union sync — it is additive only. Use the explici
 syncthis                              # interactive picker (or HELP if non-TTY)
 syncthis run    [--dry-run] [--no-skills]   # MCP + skills (alias for sync)
 syncthis sync   [--dry-run] [--no-skills]   # same as run
-syncthis mcp    [--dry-run]                 # MCP only
+syncthis mcp    [--dry-run]                 # MCP only — skip skills update
 syncthis skills                             # skills only — `npx skills update -y`
 syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
 syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # coverage + conflict report
+
+# Plugin observability + mirror (Claude, Codex, Cursor, OpenCode)
+syncthis status [--detailed] [--json]       # plugin × agent × stage matrix, with silent-failure reasons
+syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run] # install primary's plugins everywhere
 
 # Plugin and marketplace inspection / removal (Claude, Codex, Cursor, OpenCode)
 syncthis plugin list                        # list installed plugins per agent
@@ -85,6 +89,8 @@ syncthis help
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
+`--detailed` (status) exposes the per-agent source tag (e.g. `forsvn-skills@plugins-cli`).
+`--remove-stale` (mirror) also uninstalls plugins on secondaries that the primary doesn't have.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
 `--purge` (plugin / marketplace rm) also sweeps on-disk cache dirs the agent leaves behind.
@@ -156,6 +162,26 @@ syncthis rm executor --all --yes
 ```
 
 `syncthis run` is a union sync. If `executor` still exists in one agent, union sync will re-propagate it. `syncthis rm` avoids that by deleting the named server from every supported agent in one pass.
+
+## Plugin status and mirror
+
+`syncthis status` reports, per plugin × agent, where each plugin sits in its lifecycle — **registered** (in the agent's config), **loaded** (cache materialized + manifest parses), and **surfaced** (the agent will actually pick up its skills) — across **Claude Code, Codex, Cursor, and OpenCode**. It flags genuine "registered but not surfaced" cases with a reason (e.g. missing cache dir, disabled, missing manifest).
+
+The Codex lifecycle is modeled on Codex's real loader (`codex-rs/core-skills/src/loader.rs`): it reads `.codex-plugin/plugin.json`, takes its `skills` field as a root, and recursively scans it (depth ≤ 6, following symlinks) for `SKILL.md`. Nested `skills/<category>/<skill>/` layouts surface fine — syncthis reports exactly what Codex sees, not a heuristic guess.
+
+```bash
+# Per plugin × agent: registered / loaded / surfaced, with a reason for each silent failure
+syncthis status
+syncthis status --detailed        # also shows the per-agent source tag (forsvn-skills@plugins-cli)
+syncthis status --json            # machine-readable matrix
+
+# Make one agent the source of truth: install its plugins on every other agent
+syncthis mirror claude-code --dry-run
+syncthis mirror claude-code --yes
+syncthis mirror claude-code --remove-stale --yes   # also uninstall plugins the primary doesn't have
+```
+
+`mirror` is destructive — it overwrites each secondary agent's plugin set with the primary's, so it shows a diff and prompts for confirmation (or pass `--yes`). It refuses cross-`kind` targets (a GitHub-bundle primary won't mirror into OpenCode's npm-module cohort) and skips agents with no native install path (Cursor), reporting why.
 
 ## Plugins and marketplaces
 

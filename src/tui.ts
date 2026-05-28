@@ -2,7 +2,6 @@ import { intro, outro, select, isCancel, cancel, log } from "@clack/prompts";
 import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import { buildStatusReport, cellGlyph } from "./plugins/status.ts";
-import { runFixers } from "./plugins/fixers.ts";
 import { runMirror, mirrorHasChanges } from "./plugins/mirror.ts";
 import { listPlugins, runPluginDoctor } from "./plugin-doctor.ts";
 import { pluginAdapters } from "./plugins/index.ts";
@@ -13,7 +12,6 @@ type PickerChoice =
   | "mcp"
   | "skills"
   | "status"
-  | "fix"
   | "mirror"
   | "directional"
   | "doctor"
@@ -27,11 +25,10 @@ export async function showInteractivePicker(): Promise<void> {
   const choice = (await select({
     message: "what do you want to do?",
     options: [
-      { value: "sync", label: "sync — MCP union + skills + auto-repair (all agents)" },
-      { value: "mcp", label: "mcp — MCP union only (no skills, no repair)" },
+      { value: "sync", label: "sync — MCP union + skills (all agents)" },
+      { value: "mcp", label: "mcp — MCP union only (no skills)" },
       { value: "skills", label: "skills — `npx skills update -y`" },
       { value: "status", label: "status — plugin × agent matrix (find silent failures)" },
-      { value: "fix", label: "fix — repair silent-failure plugin installs" },
       { value: "mirror", label: "mirror — destructive plugin push from one primary → all" },
       { value: "directional", label: "directional — one-way MCP mirror between two agents" },
       { value: "doctor", label: "doctor — MCP coverage + conflicts" },
@@ -52,16 +49,13 @@ export async function showInteractivePicker(): Promise<void> {
         await doSync({ skipSkills: false });
         break;
       case "mcp":
-        await doSync({ skipSkills: true, skipRepair: true });
+        await doSync({ skipSkills: true });
         break;
       case "skills":
         await doSkills();
         break;
       case "status":
         await doStatus();
-        break;
-      case "fix":
-        await doFix();
         break;
       case "mirror":
         await doMirror();
@@ -87,7 +81,7 @@ export async function showInteractivePicker(): Promise<void> {
   outro("done. run `syncthis help` for non-interactive commands.");
 }
 
-async function doSync(opts: { skipSkills?: boolean; skipRepair?: boolean }) {
+async function doSync(opts: { skipSkills?: boolean }) {
   const r = await runSync({ skipSkills: opts.skipSkills });
   const names = new Set<string>();
   for (const read of r.reads) for (const n of Object.keys(read.servers)) names.add(n);
@@ -100,12 +94,6 @@ async function doSync(opts: { skipSkills?: boolean; skipRepair?: boolean }) {
     if (!r.skills.ran) log.info(`skills: ${r.skills.message ?? "skipped"}`);
     else if (r.skills.ok) log.success("skills: npx skills update -y");
     else log.error(`skills: ${r.skills.message ?? "failed"}`);
-  }
-
-  if (!opts.skipRepair) {
-    const fixed = await runFixers({ dryRun: false });
-    const applied = fixed.filter((f) => f.applied);
-    if (applied.length) log.success(`auto-repair: applied ${applied.length} fix(es) — run \`syncthis fix --dry-run\` for detail`);
   }
 }
 
@@ -133,38 +121,9 @@ async function doStatus() {
   log.success(`${ok} plugin/agent pair(s) surfacing`);
   if (silent > 0) {
     log.warn(`${silent} silent failure(s) — run \`syncthis status\` for the full matrix`);
-    log.info("tip: \`syncthis fix\` will attempt to repair them.");
   } else {
     log.success("no silent failures detected.");
   }
-}
-
-async function doFix() {
-  const preview = await runFixers({ dryRun: true });
-  const wouldApply = preview.filter((r) => !r.noop);
-  if (wouldApply.length === 0) {
-    log.success("nothing to fix.");
-    return;
-  }
-  for (const f of wouldApply) {
-    log.info(`${f.fixer} → ${f.plugin} (${f.agent}): ${f.message}`);
-  }
-  const confirm = await select({
-    message: `apply ${wouldApply.length} fix(es)?`,
-    options: [
-      { value: "no", label: "no" },
-      { value: "yes", label: `yes — patch ${wouldApply.length}` },
-    ],
-  });
-  if (isCancel(confirm) || confirm === "no") {
-    cancel("aborted.");
-    return;
-  }
-  const applied = await runFixers({ dryRun: false });
-  const ok = applied.filter((r) => r.applied).length;
-  const fail = applied.filter((r) => !r.applied && !r.noop).length;
-  if (ok) log.success(`applied ${ok} fix(es)`);
-  if (fail) log.error(`${fail} fix(es) failed`);
 }
 
 async function doMirror() {

@@ -46,7 +46,7 @@ async function writeCodexConfig(content: string) {
   await writeFile(join(workDir, ".codex", "config.toml"), content);
 }
 
-async function seedCodexCache(name: string, mkt: string, layout: { nested: string[]; flat: string[]; interface: boolean }) {
+async function seedCodexCache(name: string, mkt: string, layout: { nested: string[]; flat: string[] }) {
   const cache = join(workDir, ".codex", "plugins", "cache", mkt, name, "deadbeef");
   await mkdir(join(cache, "skills"), { recursive: true });
   for (const n of layout.nested) {
@@ -58,9 +58,10 @@ async function seedCodexCache(name: string, mkt: string, layout: { nested: strin
     await mkdir(join(cache, "skills", f), { recursive: true });
     await writeFile(join(cache, "skills", f, "SKILL.md"), `# ${f}`);
   }
+  await mkdir(join(cache, ".codex-plugin"), { recursive: true });
   await writeFile(
-    join(cache, "plugin.json"),
-    JSON.stringify(layout.interface ? { interface: { skills: [] } } : {}, null, 2),
+    join(cache, ".codex-plugin", "plugin.json"),
+    JSON.stringify({ name, skills: "./skills/", interface: { displayName: name } }, null, 2),
   );
 }
 
@@ -77,7 +78,6 @@ enabled = true
     await seedCodexCache("forsvn-skills", "plugins-cli", {
       nested: ["research/web"],
       flat: [],
-      interface: true,
     });
 
     const report = await buildStatusReport();
@@ -86,8 +86,9 @@ enabled = true
     const claudeCell = row!.cells.find((c) => c.agent === "claude-code")!;
     const codexCell = row!.cells.find((c) => c.agent === "codex")!;
     expect(cellGlyph(claudeCell)).toBe("surfaced");
-    expect(cellGlyph(codexCell)).toBe("silent");
-    expect(codexCell.report!.failureTags).toContain("codex-nested-skills");
+    // Codex recurses into the skills root, so a nested-layout plugin surfaces too.
+    expect(cellGlyph(codexCell)).toBe("surfaced");
+    expect(codexCell.report!.failureTags).toEqual([]);
   });
 
   test("plugins not installed in an agent get an absent cell", async () => {

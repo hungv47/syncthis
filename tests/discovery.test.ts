@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverPluginsForAgent } from "../src/plugins/discovery.ts";
@@ -35,7 +35,7 @@ function fakeRead(over: Partial<PluginAdapterRead> & Pick<PluginAdapterRead, "ag
 async function makeCodexCache(
   pluginName: string,
   marketplace: string,
-  layout: { nested: string[]; flat: string[]; interface: boolean },
+  layout: { nested: string[]; flat: string[]; manifest?: boolean; skillsField?: string },
 ): Promise<string> {
   const cacheRoot = join(workDir, ".codex", "plugins", "cache", marketplace, pluginName, "deadbeef");
   await mkdir(join(cacheRoot, "skills"), { recursive: true });
@@ -48,19 +48,29 @@ async function makeCodexCache(
     await mkdir(join(cacheRoot, "skills", flat), { recursive: true });
     await writeFile(join(cacheRoot, "skills", flat, "SKILL.md"), `# ${flat}\n`);
   }
-  const manifest = layout.interface
-    ? { name: pluginName, interface: { skills: [] } }
-    : { name: pluginName };
-  await writeFile(join(cacheRoot, "plugin.json"), JSON.stringify(manifest, null, 2));
+  // Real Codex plugins ship .codex-plugin/plugin.json whose `skills` field points
+  // at the skills root. manifest:false simulates a cache dir Codex won't load.
+  if (layout.manifest !== false) {
+    await mkdir(join(cacheRoot, ".codex-plugin"), { recursive: true });
+    await writeFile(
+      join(cacheRoot, ".codex-plugin", "plugin.json"),
+      JSON.stringify(
+        { name: pluginName, skills: layout.skillsField ?? "./skills/", interface: { displayName: pluginName } },
+        null,
+        2,
+      ),
+    );
+  }
   return cacheRoot;
 }
 
-describe("discoverPluginsForAgent — codex silent failure modes", () => {
-  test("nested-only skills surface as silent failure with codex-nested-skills tag", async () => {
+describe("discoverPluginsForAgent — codex lifecycle", () => {
+  test("nested skills surface — Codex recurses into the skills root (depth<=6)", async () => {
+    // Codex's loader scans the manifest skills root recursively, so a nested
+    // skills/<cat>/<skill>/ layout surfaces fully. This is NOT a silent failure.
     await makeCodexCache("forsvn-skills", "plugins-cli", {
       nested: ["research/web", "product/spec", "marketing/copy"],
       flat: [],
-      interface: true,
     });
 
     const reports = await discoverPluginsForAgent(
@@ -72,21 +82,13 @@ describe("discoverPluginsForAgent — codex silent failure modes", () => {
     expect(reports.length).toBe(1);
     const r = reports[0]!;
     expect(r.loaded).toBe(true);
-    expect(r.surfaced).toBe(false);
-    expect(r.skills).toEqual({ expected: 3, actual: 0 });
-    expect(r.failureTags).toContain("codex-nested-skills");
-    expect(r.reasons[0]).toContain("one-level-deep");
+    expect(r.surfaced).toBe(true);
+    expect(r.skills).toEqual({ expected: 3, actual: 3 });
+    expect(r.failureTags).toEqual([]);
   });
 
-  test("flat skills surface even without interface block — manifest absence demoted to informational", async () => {
-    // Reflects real-world plugins-cli installs where the manifest is missing/sparse
-    // but skills are still picked up. The interface check is a surfacing blocker
-    // *only* when no flat skills are present (the genuine impeccable case).
-    await makeCodexCache("pliable", "plugins-cli", {
-      nested: [],
-      flat: ["pristine", "perfect"],
-      interface: false,
-    });
+  test("flat skills surface", async () => {
+    await makeCodexCache("pliable", "plugins-cli", { nested: [], flat: ["pristine", "perfect"] });
     const reports = await discoverPluginsForAgent(
       fakeRead({
         agent: "codex",
@@ -95,33 +97,16 @@ describe("discoverPluginsForAgent — codex silent failure modes", () => {
     );
     const r = reports[0]!;
     expect(r.skills).toEqual({ expected: 2, actual: 2 });
-    expect(r.failureTags).not.toContain("codex-no-interface");
     expect(r.surfaced).toBe(true);
+    expect(r.failureTags).toEqual([]);
   });
 
-  test("no skills + no interface → silent failure (the impeccable case)", async () => {
-    await makeCodexCache("impeccable", "plugins-cli", {
-      nested: [],
-      flat: [],
-      interface: false,
-    });
+  test("manifest present but zero skills still surfaces (commands/tools-only plugin)", async () => {
+    await makeCodexCache("typefully", "plugins-cli", { nested: [], flat: [] });
     const reports = await discoverPluginsForAgent(
       fakeRead({
         agent: "codex",
-        plugins: [{ name: "impeccable", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
-      }),
-    );
-    const r = reports[0]!;
-    expect(r.failureTags).toContain("codex-no-interface");
-    expect(r.surfaced).toBe(false);
-  });
-
-  test("everything correct → surfaced", async () => {
-    await makeCodexCache("brave", "plugins-cli", { nested: [], flat: ["search"], interface: true });
-    const reports = await discoverPluginsForAgent(
-      fakeRead({
-        agent: "codex",
-        plugins: [{ name: "brave", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
+        plugins: [{ name: "typefully", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
       }),
     );
     const r = reports[0]!;
@@ -129,8 +114,75 @@ describe("discoverPluginsForAgent — codex silent failure modes", () => {
     expect(r.failureTags).toEqual([]);
   });
 
-  test("disabled plugin never surfaces, regardless of correctness", async () => {
-    await makeCodexCache("brave", "plugins-cli", { nested: [], flat: ["search"], interface: true });
+  test("cache dir without a .codex-plugin manifest is a real silent failure", async () => {
+    await makeCodexCache("nomanifest", "plugins-cli", { nested: [], flat: ["x"], manifest: false });
+    const reports = await discoverPluginsForAgent(
+      fakeRead({
+        agent: "codex",
+        plugins: [{ name: "nomanifest", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
+      }),
+    );
+    const r = reports[0]!;
+    expect(r.failureTags).toContain("codex-no-manifest");
+    expect(r.surfaced).toBe(false);
+  });
+
+  test("a symlink inside skills/ that escapes the scan root is not followed", async () => {
+    // Codex follows intra-tree symlinks, but a link pointing outside the plugin
+    // (skills/evil -> some external dir) must not make the read-only scan
+    // enumerate unrelated directories — keeps resolveSkillsRoot containment honest.
+    const cache = await makeCodexCache("linky", "plugins-cli", { nested: [], flat: ["legit"] });
+    const external = join(workDir, "external-skill");
+    await mkdir(external, { recursive: true });
+    await writeFile(join(external, "SKILL.md"), "# external");
+    await symlink(external, join(cache, "skills", "evil"));
+
+    const reports = await discoverPluginsForAgent(
+      fakeRead({
+        agent: "codex",
+        plugins: [{ name: "linky", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
+      }),
+    );
+    const r = reports[0]!;
+    // Only the real in-tree skill counts; the escaping symlink is ignored.
+    expect(r.skills).toEqual({ expected: 1, actual: 1 });
+    expect(r.surfaced).toBe(true);
+  });
+
+  test("manifest skills field escaping the plugin dir is refused (containment guard)", async () => {
+    // A rogue/odd manifest must not redirect the read-only skill scan outside the
+    // plugin cache dir — it falls back to <pluginDir>/skills.
+    await makeCodexCache("escaper", "plugins-cli", {
+      nested: [],
+      flat: ["legit"],
+      skillsField: "../../../../../../etc",
+    });
+    const reports = await discoverPluginsForAgent(
+      fakeRead({
+        agent: "codex",
+        plugins: [{ name: "escaper", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
+      }),
+    );
+    const r = reports[0]!;
+    expect(r.skills).toEqual({ expected: 1, actual: 1 });
+    expect(r.surfaced).toBe(true);
+  });
+
+  test("unsafe plugin name from config is refused before resolving a cache dir", async () => {
+    const reports = await discoverPluginsForAgent(
+      fakeRead({
+        agent: "codex",
+        plugins: [{ name: "../../etc/evil", marketplace: "plugins-cli", enabled: true, kind: "bundle" }],
+      }),
+    );
+    const r = reports[0]!;
+    expect(r.failureTags).toContain("codex-unsafe-name");
+    expect(r.paths).toEqual([]);
+    expect(r.surfaced).toBe(false);
+  });
+
+  test("disabled plugin never surfaces", async () => {
+    await makeCodexCache("brave", "plugins-cli", { nested: [], flat: ["search"] });
     const reports = await discoverPluginsForAgent(
       fakeRead({
         agent: "codex",

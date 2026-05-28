@@ -1,6 +1,6 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Sync MCP servers, plugins, and marketplaces across 11 AI coding agents — Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes. Run with `npx @hungv47/syncthis run`. Skills delegated to npx skills.",
   "type": "module",
   "license": "MIT",

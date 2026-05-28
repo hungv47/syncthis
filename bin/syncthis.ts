@@ -10,14 +10,12 @@ const HELP = `syncthis — keep your AI tools in sync
 
 usage:
   syncthis                         interactive picker (or HELP if non-TTY)
-  syncthis sync [--dry-run] [--no-skills] [--no-repair]
-  syncthis run  [--dry-run] [--no-skills] [--no-repair]   alias for sync
-  syncthis mcp  [--dry-run]                  MCP only — skip skills + repair
+  syncthis sync [--dry-run] [--no-skills]
+  syncthis run  [--dry-run] [--no-skills]    alias for sync
+  syncthis mcp  [--dry-run]                  MCP only — skip skills update
   syncthis skills                            skills only — \`npx skills update -y\`
   syncthis status [--detailed] [--json]      plugin × agent × stage matrix
                                              (shows silent failures with reasons)
-  syncthis fix [<plugin>] [--dry-run]        repair silent-failure plugin installs
-                                             (no plugin = run all needed fixers)
   syncthis mirror <primary> [--remove-stale] [--yes] [--dry-run]
                                              destructive: install primary's plugins on
                                              every other agent. --remove-stale also
@@ -52,10 +50,6 @@ what sync does:
      own version untouched and reports the conflict — you resolve manually.
   4. runs \`npx skills update -y\` to refresh skills (delegated to vercel-labs/skills,
      which supports 55 agents).
-  5. runs auto-repair on plugins by default — patches known silent-failure
-     modes (e.g. flattens nested Codex skills, injects missing interface
-     blocks). Writes only to agent caches, backs up first. Pass \`--no-repair\`
-     to skip. See \`syncthis fix --dry-run\` to preview.
 
 agents supported (use these IDs with the directional command):
   claude-code, cursor, codex, gemini-cli, kimi-cli, antigravity,
@@ -92,7 +86,6 @@ const GLYPHS: Record<RowStatus, string> = {
 
 const OPTIONS = {
   "no-skills": { type: "boolean" },
-  "no-repair": { type: "boolean" },
   "dry-run": { type: "boolean" },
   yes: { type: "boolean", short: "y" },
   all: { type: "boolean" },
@@ -115,15 +108,6 @@ async function cmdSync(argv: string[]) {
   const { values } = parse(argv);
   const dryRun = !!values["dry-run"];
   printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"] }));
-  // Default-on auto-repair (§7 decision #2). Opt-out via --no-repair.
-  if (values["no-repair"]) return;
-  const { runFixers } = await import("../src/plugins/fixers.ts");
-  const results = await runFixers({ dryRun });
-  if (results.length === 0) return;
-  const interesting = results.filter((r) => !r.noop || r.applied);
-  if (interesting.length === 0) return;
-  console.log(dim(`\nauto-repair${dryRun ? " (dry-run)" : ""}:`));
-  printFixerResults(results);
 }
 
 async function cmdMcp(argv: string[]) {
@@ -200,40 +184,7 @@ async function cmdStatus(argv: string[]) {
     }
   }
   if (silentCount > 0) {
-    console.log(yellow(`\n${silentCount} silent failure(s). Run \`syncthis fix\` to attempt repair.`));
-  }
-}
-
-async function cmdFix(argv: string[]) {
-  const { runFixers } = await import("../src/plugins/fixers.ts");
-  const { values, positionals } = parse(argv);
-  const dryRun = !!values["dry-run"];
-  const only = positionals.length ? positionals : undefined;
-  const results = await runFixers({ dryRun, only });
-
-  if (results.length === 0) {
-    console.log(dim(only ? `nothing to fix for ${only.join(", ")}.` : "no silent failures detected."));
-    return;
-  }
-  printFixerResults(results);
-}
-
-function printFixerResults(results: import("../src/plugins/fixers.ts").FixerResult[]) {
-  for (const r of results) {
-    const label = `${r.fixer}/${r.agent}/${r.plugin}`;
-    if (r.noop) {
-      row("unchanged", label, "", r.message);
-      continue;
-    }
-    if (r.dryRun) {
-      row("drift", label, "", `would patch ${r.patched.length} file(s): ${r.message}`);
-      continue;
-    }
-    if (r.applied) {
-      row("synced", label, "", `${r.message} (${r.patched.length} file(s))`);
-    } else {
-      row("failed", label, "", r.message);
-    }
+    console.log(yellow(`\n${silentCount} silent failure(s) — see the reason on each row above.`));
   }
 }
 
@@ -271,17 +222,20 @@ async function cmdMirror(argv: string[]) {
 function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) {
   console.log(`Mirror plugins from ${green(r.from)} → all other agents:`);
   for (const t of r.targets) {
-    if (t.unsupportedReason) {
-      console.log(`  ${dim("·")} ${t.to.padEnd(14)} ${dim(t.unsupportedReason)}`);
+    // No diff at all → unmirrorable target (kind mismatch / unreadable). Reason only.
+    if (!t.diff) {
+      if (t.unsupportedReason) console.log(`  ${dim("·")} ${t.to.padEnd(14)} ${dim(t.unsupportedReason)}`);
       continue;
     }
-    if (!t.diff) continue;
     const adds = t.diff.add.length ? `${green("+")}${t.diff.add.length}` : "";
     const rms = t.diff.remove.length ? `${red("-")}${t.diff.remove.length}` : "";
     const summary = [adds, rms].filter(Boolean).join(" ") || dim("unchanged");
     console.log(`  ${green("→")} ${t.to.padEnd(14)} ${summary}`);
     for (const p of t.diff.add) console.log(`      ${green("+")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
     for (const p of t.diff.remove) console.log(`      ${red("-")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
+    // Target has a diff but also a caveat (e.g. Cursor can remove but not install):
+    // explain why some plugins won't be pushed so the confirmed diff isn't misread.
+    if (t.unsupportedReason) console.log(`      ${dim(t.unsupportedReason)}`);
   }
 }
 
@@ -922,7 +876,6 @@ async function main() {
   if (cmd === "skills") return cmdSkillsOnly();
   if (cmd === "doctor") return cmdDoctor();
   if (cmd === "status") return cmdStatus(rest);
-  if (cmd === "fix") return cmdFix(rest);
   if (cmd === "mirror") return cmdMirror(rest);
   if (cmd === "from") return cmdFanOut(rest);
   if (cmd === "rm" || cmd === "remove") return cmdRemove(rest);

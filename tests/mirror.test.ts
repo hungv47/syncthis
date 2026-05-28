@@ -87,6 +87,17 @@ enabled = true
     expect(opencode.unsupportedReason).toContain("kind mismatch");
   });
 
+  test("target with no install primitive (cursor) shows no add list and explains why", async () => {
+    // Cursor is bundle-kind but has no installPlugin. Preview must not list adds
+    // for it — apply can't push them, so a confirmed diff that did would lie.
+    await installFakeCli("claude", JSON.stringify([{ id: "foo@mkt", enabled: true }]));
+    const report = await runMirror({ from: "claude-code", apply: false });
+    const cursor = report.targets.find((t) => t.to === "cursor")!;
+    expect(cursor.diff).not.toBeNull();
+    expect(cursor.diff!.add).toEqual([]);
+    expect(cursor.unsupportedReason).toContain("no install primitive");
+  });
+
   test("preview without apply does not invoke CLI install", async () => {
     await installFakeCli("claude", JSON.stringify([{ id: "alpha@mkt", enabled: true }]));
     await installFakeCli("codex", "");

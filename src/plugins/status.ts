@@ -71,8 +71,8 @@ export function cellGlyph(cell: StatusCell): "absent" | "error" | "surfaced" | "
 
 export function hasSilentFailures(report: StatusReport): boolean {
   // "disabled" is an intentional user state, not a failure. cmdStatus and
-  // doStatus both treat it as informational and don't suggest `syncthis fix`
-  // for it — this helper must match that semantics so any caller wiring it
-  // into a CI gate doesn't get false positives from intentionally-disabled plugins.
+  // doStatus both treat it as informational — this helper must match that
+  // semantics so any caller wiring it into a CI gate doesn't get false
+  // positives from intentionally-disabled plugins.
   return report.rows.some((row) => row.cells.some((c) => cellGlyph(c) === "silent"));
 }

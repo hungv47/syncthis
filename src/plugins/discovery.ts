@@ -6,10 +6,11 @@
 // described in plan-cross-agent-sync.md §3 — the silent-failure zone where
 // every existing tool reports green.
 
-import { readdir, stat, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, stat, readFile, realpath } from "node:fs/promises";
+import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { expandHome } from "../io.ts";
 import { pluginAdapters } from "./index.ts";
+import { isSafeIdentifier } from "./shell.ts";
 import type { PluginAdapterRead, PluginRecord } from "./types.ts";
 import type { AgentId } from "../types.ts";
 
@@ -27,18 +28,10 @@ export type LifecycleReport = {
   reasons: string[];
   // Resolved plugin directories on disk (Codex may have multiple under different owners).
   paths: string[];
-  // Free-form tags consumed by fixers — e.g. "codex-nested-skills", "codex-no-interface".
+  // Free-form tags for real, verifiable failure states — e.g. "codex-no-cache",
+  // "codex-no-manifest", "codex-unsafe-name".
   failureTags: string[];
 };
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function isDir(p: string): Promise<boolean> {
   try {
@@ -57,18 +50,20 @@ async function listDirs(p: string): Promise<string[]> {
   }
 }
 
-// Walk a plugin directory looking for SKILL.md files. Returns depth of each find
-// (relative to <pluginDir>/skills/). Depth 1 = flat layout (skills/<skill>/SKILL.md).
-// Depth >=2 = nested (skills/<cat>/<skill>/SKILL.md).
-async function findSkillManifests(pluginDir: string): Promise<{ path: string; depth: number }[]> {
-  const skillsDir = join(pluginDir, "skills");
+// Recursively find SKILL.md files under a skills directory, mirroring Codex's
+// loader (codex-rs/core-skills/src/loader.rs): it descends real AND symlinked
+// directories, capped at depth 6 from the root, so nested skills/<cat>/<skill>/
+// SKILL.md surface exactly as Codex (and Claude/Cursor) see them. One path per skill.
+const MAX_SKILL_SCAN_DEPTH = 6;
+async function collectSkillManifests(skillsDir: string): Promise<string[]> {
   if (!(await isDir(skillsDir))) return [];
-  const found: { path: string; depth: number }[] = [];
+  const root = resolve(skillsDir);
+  const found: string[] = [];
   await walk(skillsDir, 0);
   return found;
 
   async function walk(dir: string, depth: number) {
-    if (depth > 4) return;
+    if (depth > MAX_SKILL_SCAN_DEPTH) return;
     let entries: import("node:fs").Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -79,35 +74,61 @@ async function findSkillManifests(pluginDir: string): Promise<{ path: string; de
     for (const e of entries) {
       if (e.name === "SKILL.md" && e.isFile()) {
         hasSkillMd = true;
-        found.push({ path: join(dir, e.name), depth });
+        found.push(join(dir, e.name));
       }
     }
     if (hasSkillMd) return;
     for (const e of entries) {
-      if (e.isDirectory()) await walk(join(dir, e.name), depth + 1);
+      const child = join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(child, depth + 1);
+      } else if (e.isSymbolicLink() && (await isDir(child))) {
+        // Codex follows symlinked skill dirs, but only honor links that resolve
+        // back inside the scan root — a link escaping the plugin tree (e.g.
+        // skills/x -> /etc) must not make this read-only scan enumerate unrelated
+        // directories. Keeps the resolveSkillsRoot containment guarantee intact.
+        const target = await realpath(child).catch(() => null);
+        if (target && (target === root || target.startsWith(root + sep))) {
+          await walk(child, depth + 1);
+        }
+      }
     }
   }
 }
 
-// Codex's UI surfacing depends on plugin.json declaring an `interface` block with
-// at least one tool/skill descriptor. plugins-cli will auto-inject a stub; raw
-// installs may not. Returns true if the manifest reads as "surfaceable".
-async function codexManifestSurfaceable(pluginDir: string): Promise<{ ok: boolean; reason?: string }> {
-  for (const name of ["plugin.json", "codex-plugin.json"]) {
-    const path = join(pluginDir, name);
-    if (!(await pathExists(path))) continue;
-    let parsed: Record<string, unknown>;
+// Skills shipped under <pluginDir>/skills (Claude/Cursor install layout).
+async function findSkillManifests(pluginDir: string): Promise<string[]> {
+  return collectSkillManifests(join(pluginDir, "skills"));
+}
+
+// Codex reads a plugin's manifest from .codex-plugin/plugin.json (verified across
+// every installed plugin), falling back to .claude-plugin/plugin.json. The `skills`
+// field, when a string, points at the skills root Codex scans; otherwise it defaults
+// to ./skills/. (Confirmed against codex-rs/core-skills/src/loader.rs.)
+type CodexManifest = { skills?: unknown };
+async function readCodexManifest(pluginDir: string): Promise<CodexManifest | null> {
+  for (const rel of [".codex-plugin", ".claude-plugin"]) {
     try {
-      parsed = JSON.parse(await readFile(path, "utf8"));
-    } catch (err) {
-      return { ok: false, reason: `${name} did not parse: ${(err as Error).message}` };
+      return JSON.parse(await readFile(join(pluginDir, rel, "plugin.json"), "utf8")) as CodexManifest;
+    } catch {
+      continue;
     }
-    const iface = parsed.interface;
-    if (!iface) return { ok: false, reason: `${name} has no \`interface\` block (Codex will register but won't surface in UI)` };
-    if (typeof iface !== "object" || iface === null) return { ok: false, reason: `${name} has non-object \`interface\`` };
-    return { ok: true };
   }
-  return { ok: false, reason: "no plugin.json or codex-plugin.json found in cache dir" };
+  return null;
+}
+
+function resolveSkillsRoot(pluginDir: string, manifest: CodexManifest | null): string {
+  const fallback = join(pluginDir, "skills");
+  const s = manifest?.skills;
+  if (typeof s !== "string" || !s.trim()) return fallback;
+  // The manifest is plugin-authored data. Containment guard: refuse a `skills`
+  // value that escapes the plugin dir (absolute path or ../ traversal). The scan
+  // is read-only, but a rogue value could enumerate an unrelated/huge tree or
+  // report skills from outside the plugin.
+  const resolved = resolve(pluginDir, s);
+  const rel = relative(resolve(pluginDir), resolved);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return fallback;
+  return resolved;
 }
 
 // CODEX —
@@ -131,6 +152,15 @@ async function discoverCodexPlugin(plugin: PluginRecord): Promise<LifecycleRepor
   };
 
   if (plugin.enabled === false) report.reasons.push("plugin is disabled in config.toml");
+
+  // A malformed/malicious config.toml table key (e.g. [plugins."../../x"]) parses
+  // into a name with path separators. Refuse to resolve a cache dir for an unsafe
+  // name before it reaches any join() — same guard codex.ts applies on the remove path.
+  if (!isSafeIdentifier(plugin.name)) {
+    report.reasons.unshift(`unsafe plugin name in config (path separators/traversal): ${plugin.name}`);
+    report.failureTags.push("codex-unsafe-name");
+    return report;
+  }
 
   const owners = await listDirs(cacheRoot);
   const candidatePluginDirs: string[] = [];
@@ -167,51 +197,27 @@ async function discoverCodexPlugin(plugin: PluginRecord): Promise<LifecycleRepor
   report.paths = candidatePluginDirs;
   report.loaded = true;
 
+  // Codex's loader reads .codex-plugin/plugin.json, takes its `skills` field as a
+  // root, and recursively scans it (depth<=6, following symlinks) for SKILL.md.
+  // Surfacing is manifest + recursion driven — there is no one-level-deep limit and
+  // no interface-block gate, so we report exactly what that scan would find. A
+  // plugin with a manifest but no skills still surfaces (commands/tools-only).
   let totalSkills = 0;
-  let nestedSkills = 0;
-  let flatSkills = 0;
+  let manifestPresent = false;
   for (const dir of candidatePluginDirs) {
-    const skills = await findSkillManifests(dir);
-    totalSkills += skills.length;
-    for (const s of skills) {
-      if (s.depth >= 2) nestedSkills += 1;
-      else flatSkills += 1;
-    }
+    const manifest = await readCodexManifest(dir);
+    if (manifest) manifestPresent = true;
+    totalSkills += (await collectSkillManifests(resolveSkillsRoot(dir, manifest))).length;
   }
   report.skills.expected = totalSkills;
-  // Codex's skill scanner is one-level-deep (skills/<skill>/SKILL.md). Nested
-  // SKILL.md files are silently ignored. Surfaced count = flat-only.
-  report.skills.actual = flatSkills;
+  report.skills.actual = totalSkills;
 
-  if (nestedSkills > 0 && flatSkills === 0) {
-    report.reasons.push(
-      `Codex skill scanner is one-level-deep; plugin uses skills/<category>/<skill>/ — ${nestedSkills} skill(s) will not surface`,
-    );
-    report.failureTags.push("codex-nested-skills");
-  } else if (nestedSkills > 0) {
-    report.reasons.push(`${nestedSkills} skill(s) under nested categories will not surface (only ${flatSkills} are flat)`);
-    report.failureTags.push("codex-nested-skills");
+  if (!manifestPresent) {
+    report.reasons.push("no .codex-plugin/plugin.json in cache dir — Codex will not load this as a plugin");
+    report.failureTags.push("codex-no-manifest");
   }
 
-  // Manifest / interface block check — only matters as a *surfacing blocker*
-  // when no other surfaceable artifact is present. plugins-cli installs ship
-  // a working manifest; bare-git installs frequently don't, and that's the
-  // documented silent-failure mode (impeccable etc.). But if flat skills are
-  // already surfacing, missing manifest is informational, not a blocker.
-  if (flatSkills === 0) {
-    for (const dir of candidatePluginDirs) {
-      const m = await codexManifestSurfaceable(dir);
-      if (!m.ok && m.reason) {
-        report.reasons.push(m.reason);
-        report.failureTags.push("codex-no-interface");
-        break;
-      }
-    }
-  }
-
-  const manifestOk = !report.failureTags.includes("codex-no-interface");
-  const skillsOk = totalSkills === 0 ? true : flatSkills > 0;
-  report.surfaced = plugin.enabled !== false && manifestOk && skillsOk;
+  report.surfaced = plugin.enabled !== false && manifestPresent;
 
   return report;
 }

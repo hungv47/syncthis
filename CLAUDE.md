@@ -83,7 +83,7 @@ syncthis help
 
 ## Distribution
 
-- **npm:** `@hungv47/syncthis` (current: `0.2.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet.
+- **npm:** `@hungv47/syncthis` (current: `0.4.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet.
 - **Install:** `bun install -g @hungv47/syncthis` or `npm install -g @hungv47/syncthis`.
 - **The `.mjs` bin shim is intentional** — see Stack note above. Don't try to point `bin` directly at a `.ts` file or a path with leading `./`.
 

@@ -113,20 +113,35 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     const fromIdx = indexByKey(fromRead.plugins);
     const toIdx = indexByKey(toRead.plugins);
 
+    const canInstall = !!a.installPlugin;
+    const canRemove = !!a.removePlugin;
+
+    // Only propose installs the target can actually perform. A bundle-kind agent
+    // without an install primitive (e.g. Cursor) must NOT show `add` entries in
+    // the preview — apply would silently drop them, so a confirmed diff that
+    // listed them would lie about what will happen.
     const add: PluginRecord[] = [];
-    for (const [k, p] of fromIdx) if (!toIdx.has(k)) add.push(p);
+    let skippedInstalls = 0;
+    for (const [k, p] of fromIdx) {
+      if (toIdx.has(k)) continue;
+      if (canInstall) add.push(p);
+      else skippedInstalls += 1;
+    }
 
     const remove: PluginRecord[] = [];
-    if (opts.removeStale) {
+    if (opts.removeStale && canRemove) {
       for (const [k, p] of toIdx) if (!fromIdx.has(k)) remove.push(p);
     }
 
     const target: MirrorTarget = { to: a.id, toRead, diff: { add, remove } };
+    if (skippedInstalls > 0) {
+      target.unsupportedReason = `${a.id} has no install primitive — ${skippedInstalls} plugin(s) cannot be pushed${
+        opts.removeStale && canRemove ? " (stale removals still apply)" : ""
+      }`;
+    }
 
     if (opts.apply) {
-      if (!a.installPlugin) {
-        target.unsupportedReason = `${a.id} has no install primitive (mirror cannot push plugins to it)`;
-      } else {
+      if (a.installPlugin) {
         const installs: PluginInstallResult[] = [];
         for (const p of add) {
           installs.push(await a.installPlugin(p.name, { dryRun: false, marketplace: p.marketplace }));
