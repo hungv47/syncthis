@@ -278,6 +278,18 @@ describe("codex installPlugin", () => {
     await installProvisionFakes("foo");
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "../evil" });
     expect(res.status).toBe("skipped");
+    // --provision was set but unusable repo → don't tell them to retry --provision.
+    expect(res.message).toContain("no usable source repo");
+    expect(res.message).not.toContain("retry with --provision");
+    const inv = await readInvocations();
+    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+  });
+
+  test("provision set but no source repo for the marketplace: clear skip, no npx", async () => {
+    await installProvisionFakes("foo");
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true });
+    expect(res.status).toBe("skipped");
+    expect(res.message).toContain("no usable source repo");
     const inv = await readInvocations();
     expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
   });

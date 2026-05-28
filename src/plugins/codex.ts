@@ -181,19 +181,19 @@ export const codexPluginAdapter: PluginAdapter = {
       if (candidates.length === 1) {
         marketplace = candidates[0];
       } else if (candidates.length === 0) {
-        // Not a failure — Codex simply has no marketplace that provides this
-        // plugin, so there is nothing to attempt. Skip with a reason. If we
-        // actually provisioned and it still isn't resolvable, the repo didn't
-        // expose it for Codex (e.g. a multi-plugin repo's non-primary plugin —
-        // an upstream snapshot defect).
-        return {
-          agent: "codex",
-          target: name,
-          status: "skipped",
-          message: provisioned
-            ? "provisioned, but Codex's plugin system doesn't expose it — likely a skills-only bundle (synced via `syncthis run` → npx skills, not the plugin mirror) or a multi-plugin repo snapshot defect"
-            : "no registered Codex marketplace provides it — retry with --provision, or add its marketplace (codex plugin marketplace add ...)",
-        };
+        // Not a failure — Codex has no marketplace that provides this plugin, so
+        // there's nothing to install. The reason depends on what we could try:
+        //  - provisioned: registered the repo but Codex still can't resolve it
+        //    (skills-only bundle, or a multi-plugin repo's non-primary plugin).
+        //  - --provision set but no usable github source repo (local/unknown
+        //    marketplace, or unsafe slug) — couldn't even attempt it.
+        //  - no --provision: point the user at the flag.
+        const message = provisioned
+          ? "provisioned, but Codex's plugin system doesn't expose it — likely a skills-only bundle (synced via `syncthis run` → npx skills, not the plugin mirror) or a multi-plugin repo snapshot defect"
+          : opts.provision
+            ? "no usable source repo to provision from — its marketplace isn't a github owner/repo syncthis can register in Codex"
+            : "no registered Codex marketplace provides it — retry with --provision, or add its marketplace (codex plugin marketplace add ...)";
+        return { agent: "codex", target: name, status: "skipped", message };
       } else if (candidates.includes(PREFERRED_MARKETPLACE)) {
         // Ambiguous, but prefer plugins-cli — the npx-plugins ecosystem these
         // Claude plugins came from — over Codex/OpenAI-bundled marketplaces.
