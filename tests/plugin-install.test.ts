@@ -33,7 +33,7 @@ async function installFakeCli(name: "claude" | "codex", listOutput: string, opts
     name === "claude"
       ? `if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi`
-      : "";
+      : `if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi`;
   const addCase =
     opts.exitOnAdd != null
       ? `case "$1 $2" in
@@ -61,6 +61,20 @@ async function readInvocations(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+// Render a `codex plugin list` table (the real CLI's fixed-width format) so the
+// codex adapter, which now reads install truth from that command, sees state.
+type CodexRow = [id: string, status: string, version: string, path: string];
+function codexListTable(rows: CodexRow[]): string {
+  const header: CodexRow = ["PLUGIN", "STATUS", "VERSION", "PATH"];
+  const all = [header, ...rows];
+  const w0 = Math.max(...all.map((r) => r[0].length));
+  const w1 = Math.max(...all.map((r) => r[1].length));
+  const w2 = Math.max(...all.map((r) => r[2].length));
+  const fmt = (r: CodexRow) =>
+    `${r[0].padEnd(w0 + 2)}${r[1].padEnd(w1 + 2)}${r[2].padEnd(w2 + 2)}${r[3]}`.replace(/\s+$/, "");
+  return ["Marketplace `mkt`", "/x/marketplace.json", "", fmt(header), ...rows.map(fmt), ""].join("\n");
 }
 
 describe("claude installPlugin", () => {
@@ -107,23 +121,24 @@ describe("claude installPlugin", () => {
 });
 
 describe("codex installPlugin", () => {
-  test("returns 'present' when plugin already in config.toml", async () => {
-    await installFakeCli("codex", "");
-    await mkdir(join(workDir, ".codex"), { recursive: true });
-    await writeFile(join(workDir, ".codex", "config.toml"), `
-[plugins."alpha@mkt"]
-enabled = true
-`);
+  test("returns 'present' when plugin is already installed, does NOT shell out", async () => {
+    await installFakeCli("codex", codexListTable([["alpha@mkt", "installed, enabled", "1.0.0", "/cache/alpha"]]));
     const res = await codexPluginAdapter.installPlugin!("alpha", { dryRun: false, marketplace: "mkt" });
     expect(res.status).toBe("present");
     const invocations = await readInvocations();
     expect(invocations.some((line) => /plugin add/.test(line))).toBe(false);
   });
 
+  test("does NOT treat a 'not installed' registration as present", async () => {
+    await installFakeCli("codex", codexListTable([["alpha@mkt", "not installed", "", "/cache/alpha"]]));
+    const res = await codexPluginAdapter.installPlugin!("alpha", { dryRun: false, marketplace: "mkt" });
+    expect(res.status).toBe("installed");
+    const invocations = await readInvocations();
+    expect(invocations.some((line) => /plugin add/.test(line))).toBe(true);
+  });
+
   test("dry-run does not shell out", async () => {
     await installFakeCli("codex", "");
-    await mkdir(join(workDir, ".codex"), { recursive: true });
-    await writeFile(join(workDir, ".codex", "config.toml"), "");
     const res = await codexPluginAdapter.installPlugin!("fresh", { dryRun: true, marketplace: "mkt" });
     expect(res.status).toBe("installed");
     expect(res.message).toBe("dry-run");
@@ -133,8 +148,6 @@ enabled = true
 
   test("missing CLI surfaces a clear failure", async () => {
     process.env.PATH = "";
-    await mkdir(join(workDir, ".codex"), { recursive: true });
-    await writeFile(join(workDir, ".codex", "config.toml"), "");
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
     expect(res.status).toBe("failed");
     expect(res.message).toContain("not found");
@@ -142,10 +155,58 @@ enabled = true
 
   test("non-zero exit propagates stderr", async () => {
     await installFakeCli("codex", "", { exitOnAdd: 5, addStderr: "marketplace not registered" });
-    await mkdir(join(workDir, ".codex"), { recursive: true });
-    await writeFile(join(workDir, ".codex", "config.toml"), "");
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, marketplace: "ghost" });
     expect(res.status).toBe("failed");
     expect(res.message).toContain("marketplace not registered");
+  });
+
+  test("resolves a bare name to <name>@<marketplace> from the snapshot", async () => {
+    // `codex plugin add` rejects a bare name; the adapter must find the
+    // marketplace from a (not-installed) plugin-list row and qualify the add.
+    await installFakeCli("codex", codexListTable([["foo@plugins-cli", "not installed", "", "/cache/foo"]]));
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
+    expect(res.status).toBe("installed");
+    expect(res.target).toBe("foo@plugins-cli");
+    const invocations = await readInvocations();
+    expect(invocations.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
+  });
+
+  test("fails clearly when a bare name is in no Codex marketplace", async () => {
+    await installFakeCli("codex", codexListTable([["other@plugins-cli", "not installed", "", "/cache/other"]]));
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
+    expect(res.status).toBe("failed");
+    expect(res.message).toContain("not available in any registered Codex marketplace");
+    const invocations = await readInvocations();
+    expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
+  });
+
+  test("prefers plugins-cli when a bare name is in multiple marketplaces", async () => {
+    await installFakeCli(
+      "codex",
+      codexListTable([
+        ["foo@openai-curated", "not installed", "", "/cache/foo-openai"],
+        ["foo@plugins-cli", "not installed", "", "/cache/foo-plugins"],
+      ]),
+    );
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
+    expect(res.status).toBe("installed");
+    expect(res.target).toBe("foo@plugins-cli");
+    const invocations = await readInvocations();
+    expect(invocations.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
+  });
+
+  test("still fails on ambiguity when plugins-cli is not a candidate", async () => {
+    await installFakeCli(
+      "codex",
+      codexListTable([
+        ["foo@openai-curated", "not installed", "", "/cache/foo-a"],
+        ["foo@openai-bundled", "not installed", "", "/cache/foo-b"],
+      ]),
+    );
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
+    expect(res.status).toBe("failed");
+    expect(res.message).toContain("multiple Codex marketplaces");
+    const invocations = await readInvocations();
+    expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
   });
 });

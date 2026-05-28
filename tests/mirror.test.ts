@@ -31,7 +31,7 @@ async function installFakeCli(name: "claude" | "codex", listOutput: string) {
     name === "claude"
       ? `if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi`
-      : "";
+      : `if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi`;
   const script = `#!/bin/sh
 echo "${name} $@" >> ${log}
 ${listMatch}
@@ -51,9 +51,30 @@ async function readInvocations() {
   }
 }
 
-async function writeCodexConfig(content: string) {
-  await mkdir(join(workDir, ".codex"), { recursive: true });
-  await writeFile(join(workDir, ".codex", "config.toml"), content);
+// Render the `codex plugin list` table the codex adapter now reads for install
+// truth. Each row: [id, status, version, path]. Codex install identity carries
+// an agent-local marketplace tag (e.g. "@plugins-cli"), distinct from Claude's.
+type CodexRow = [id: string, status: string, version: string, path: string];
+function codexList(rows: CodexRow[]): string {
+  const header: CodexRow = ["PLUGIN", "STATUS", "VERSION", "PATH"];
+  const all = [header, ...rows];
+  const w0 = Math.max(...all.map((r) => r[0].length));
+  const w1 = Math.max(...all.map((r) => r[1].length));
+  const w2 = Math.max(...all.map((r) => r[2].length));
+  const fmt = (r: CodexRow) =>
+    `${r[0].padEnd(w0 + 2)}${r[1].padEnd(w1 + 2)}${r[2].padEnd(w2 + 2)}${r[3]}`.replace(/\s+$/, "");
+  return ["Marketplace `plugins-cli`", "/x/marketplace.json", "", fmt(header), ...rows.map(fmt), ""].join("\n");
+}
+
+// Shorthand: an installed codex plugin row from a fully-qualified id.
+function codexInstalled(...ids: string[]): string {
+  return codexList(ids.map((id) => [id, "installed, enabled", "1.0.0", `/cache/${id.split("@")[0]}`]));
+}
+
+// Shorthand: plugins present in a Codex marketplace snapshot but NOT installed —
+// available for `codex plugin add` (marketplace resolvable, but not yet loaded).
+function codexAvailable(...ids: string[]): string {
+  return codexList(ids.map((id) => [id, "not installed", "", `/cache/${id.split("@")[0]}`]));
 }
 
 describe("runMirror — preview (no apply)", () => {
@@ -66,11 +87,7 @@ describe("runMirror — preview (no apply)", () => {
         { id: "bar@mkt1", enabled: true },
       ]),
     );
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."bar@mkt1"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("bar@plugins-cli"));
 
     const report = await runMirror({ from: "claude-code", apply: false });
     expect(mirrorHasChanges(report)).toBe(true);
@@ -82,7 +99,6 @@ enabled = true
   test("preview without apply does not invoke CLI install", async () => {
     await installFakeCli("claude", JSON.stringify([{ id: "alpha@mkt", enabled: true }]));
     await installFakeCli("codex", "");
-    await writeCodexConfig("");
     await runMirror({ from: "claude-code", apply: false });
     const invocations = await readInvocations();
     // claude plugin list is fine; codex plugin add must NOT appear.
@@ -95,31 +111,19 @@ describe("runMirror — safety: refuse dangerous --remove-stale", () => {
     // No claude CLI on PATH → fromRead.error fires.
     // With --remove-stale, fromIdx would be empty; without the guard, every
     // plugin in every target gets queued for deletion. Refuse instead.
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."existing@mkt"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
     expect(runMirror({ from: "claude-code", apply: false, removeStale: true })).rejects.toThrow(/refusing --remove-stale/);
   });
 
   test("throws when primary reports zero plugins and --remove-stale is set", async () => {
     await installFakeCli("claude", JSON.stringify([]));
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."existing@mkt"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
     expect(runMirror({ from: "claude-code", apply: false, removeStale: true })).rejects.toThrow(/zero plugins/);
   });
 
   test("allows empty-primary mirror WITHOUT --remove-stale (no deletions to schedule)", async () => {
     await installFakeCli("claude", JSON.stringify([]));
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."existing@mkt"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
     const report = await runMirror({ from: "claude-code", apply: false, removeStale: false });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.add).toEqual([]);
@@ -136,8 +140,8 @@ describe("runMirror — apply", () => {
         { id: "beta@mkt", enabled: true },
       ]),
     );
-    await installFakeCli("codex", "");
-    await writeCodexConfig("");
+    // Both available in Codex's snapshot (not yet installed) so add can resolve.
+    await installFakeCli("codex", codexAvailable("alpha@plugins-cli", "beta@plugins-cli"));
     const report = await runMirror({ from: "claude-code", apply: true });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.installs).toBeDefined();
@@ -149,14 +153,7 @@ describe("runMirror — apply", () => {
   test("--remove-stale removes plugins not in primary", async () => {
     // Primary must be non-empty to pass the safety guard (see refuse-tests above).
     await installFakeCli("claude", JSON.stringify([{ id: "keep@mkt", enabled: true }]));
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."keep@mkt"]
-enabled = true
-
-[plugins."stale@mkt"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("keep@plugins-cli", "stale@plugins-cli"));
     const report = await runMirror({ from: "claude-code", apply: false, removeStale: true });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.remove.map((p) => p.name)).toEqual(["stale"]);
@@ -172,11 +169,7 @@ describe("runMirror — cross-agent marketplace tags (regression)", () => {
   // why this gap went unnoticed.)
   test("same plugin under different marketplace tags is NOT re-added", async () => {
     await installFakeCli("claude", JSON.stringify([{ id: "forsvn-skills@forsvn-skills", enabled: true }]));
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."forsvn-skills@plugins-cli"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("forsvn-skills@plugins-cli"));
     const report = await runMirror({ from: "claude-code", apply: false });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.add).toEqual([]);
@@ -191,23 +184,21 @@ enabled = true
         { id: "vercel@claude-mkt", enabled: true },
       ]),
     );
-    await installFakeCli("codex", "");
-    await writeCodexConfig(`
-[plugins."forsvn-skills@plugins-cli"]
-enabled = true
-`);
+    await installFakeCli("codex", codexInstalled("forsvn-skills@plugins-cli"));
     const report = await runMirror({ from: "claude-code", apply: false });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.add.map((p) => p.name)).toEqual(["vercel"]);
   });
 
-  test("apply installs the missing plugin by BARE name, not the source marketplace tag", async () => {
+  test("apply resolves the TARGET's marketplace, never the source tag", async () => {
+    // Claude tags it vercel@claude-mkt; Codex provides it as vercel@plugins-cli.
+    // The install must use Codex's resolved tag, not Claude's (which Codex can't
+    // resolve), and `codex plugin add` requires a tag — a bare name is rejected.
     await installFakeCli("claude", JSON.stringify([{ id: "vercel@claude-mkt", enabled: true }]));
-    await installFakeCli("codex", "");
-    await writeCodexConfig("");
+    await installFakeCli("codex", codexAvailable("vercel@plugins-cli"));
     await runMirror({ from: "claude-code", apply: true });
     const invocations = await readInvocations();
-    expect(invocations.some((l) => l.trim() === "codex plugin add -- vercel")).toBe(true);
+    expect(invocations.some((l) => l.trim() === "codex plugin add -- vercel@plugins-cli")).toBe(true);
     expect(invocations.some((l) => /vercel@claude-mkt/.test(l))).toBe(false);
   });
 });

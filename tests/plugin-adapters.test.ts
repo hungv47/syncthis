@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { codexPluginAdapter } from "../src/plugins/codex.ts";
+import { codexPluginAdapter, parseCodexPluginList } from "../src/plugins/codex.ts";
 import { claudePluginAdapter } from "../src/plugins/claude.ts";
 
 let workDir: string;
@@ -22,9 +22,44 @@ afterEach(async () => {
   await rm(workDir, { recursive: true, force: true });
 });
 
-async function writeCodexConfig(text: string) {
-  await mkdir(join(workDir, ".codex"), { recursive: true });
-  await writeFile(join(workDir, ".codex", "config.toml"), text);
+// Build a fixed-width `codex plugin list` table the way the real CLI does:
+// columns padded to max(header, values) + 2-space gap, last column unpadded.
+type CodexRow = [id: string, status: string, version: string, path: string];
+function codexTable(rows: CodexRow[]): string {
+  const header: CodexRow = ["PLUGIN", "STATUS", "VERSION", "PATH"];
+  const all = [header, ...rows];
+  const widths: [number, number, number] = [
+    Math.max(...all.map((r) => r[0].length)),
+    Math.max(...all.map((r) => r[1].length)),
+    Math.max(...all.map((r) => r[2].length)),
+  ];
+  const fmt = (c: CodexRow) =>
+    `${c[0].padEnd(widths[0] + 2)}${c[1].padEnd(widths[1] + 2)}${c[2].padEnd(widths[2] + 2)}${c[3]}`.replace(/\s+$/, "");
+  return [
+    "Marketplace `plugins-cli`",
+    "/x/.agents/plugins/marketplace.json",
+    "",
+    fmt(header),
+    ...rows.map(fmt),
+    "",
+  ].join("\n");
+}
+
+async function installFakeCodex(listOutput: string) {
+  const binDir = join(workDir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const outFile = join(workDir, "codex-list.txt");
+  await writeFile(outFile, listOutput);
+  const script = `#!/bin/sh
+case "$1 $2" in
+  "plugin list") cat ${outFile} ;;
+  *) echo "unexpected: $@" >&2 ; exit 99 ;;
+esac
+`;
+  const codexPath = join(binDir, "codex");
+  await writeFile(codexPath, script);
+  await chmod(codexPath, 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
 async function installFakeClaude(pluginsJson: string) {
@@ -44,35 +79,60 @@ esac
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
-describe("codex plugin adapter", () => {
-  test("reads plugins from config.toml", async () => {
-    await writeCodexConfig(`
-[plugins."vercel-plugin@plugins-cli"]
-enabled = true
+const CODEX_SAMPLE: CodexRow[] = [
+  ["vercel-plugin@plugins-cli", "not installed", "", "/cache/vercel"],
+  ["forsvn-skills@plugins-cli", "installed, enabled", "3.0.0", "/cache/forsvn"],
+  ["brave-search-skills@plugins-cli", "installed, enabled", "1.4.0", "/cache/brave"],
+  ["expo@plugins-cli", "installed, disabled", "2.0.0", "/cache/expo"],
+];
 
-[plugins."expo@plugins-cli"]
-enabled = false
-`);
+describe("codex plugin adapter", () => {
+  test("reports only installed plugins from `codex plugin list`", async () => {
+    await installFakeCodex(codexTable(CODEX_SAMPLE));
     const r = await codexPluginAdapter.read();
     expect(r.exists).toBe(true);
-    expect(r.plugins.map((p) => `${p.name}@${p.marketplace}=${p.enabled}`).sort()).toEqual([
-      "expo@plugins-cli=false",
-      "vercel-plugin@plugins-cli=true",
+    expect(r.error).toBeUndefined();
+    // "not installed" (vercel-plugin) must be excluded — that was the v0.5 bug.
+    expect(r.plugins.map((p) => `${p.name}@${p.marketplace}`).sort()).toEqual([
+      "brave-search-skills@plugins-cli",
+      "expo@plugins-cli",
+      "forsvn-skills@plugins-cli",
     ]);
   });
 
-  test("missing config produces empty, exists=false", async () => {
+  test("captures version and enabled/disabled state", async () => {
+    await installFakeCodex(codexTable(CODEX_SAMPLE));
     const r = await codexPluginAdapter.read();
-    expect(r.exists).toBe(false);
-    expect(r.plugins).toEqual([]);
-    expect(r.error).toBeUndefined();
+    const forsvn = r.plugins.find((p) => p.name === "forsvn-skills");
+    expect(forsvn?.version).toBe("3.0.0");
+    expect(forsvn?.enabled).toBe(true);
+    const expo = r.plugins.find((p) => p.name === "expo");
+    expect(expo?.enabled).toBe(false);
   });
 
-  test("invalid TOML produces error", async () => {
-    await writeCodexConfig("this is = not [valid] toml { :");
+  test("returns error when codex CLI not on PATH", async () => {
+    process.env.PATH = "/nonexistent-bin-dir-syncthis-test";
     const r = await codexPluginAdapter.read();
-    expect(r.exists).toBe(true);
     expect(r.error).toBeTruthy();
+    expect(r.exists).toBe(false);
+    expect(r.plugins).toEqual([]);
+  });
+
+  test("parseCodexPluginList handles multiple marketplace sections", () => {
+    const text = [
+      codexTable([["foo@plugins-cli", "installed, enabled", "1.0.0", "/cache/foo"]]),
+      "",
+      "Marketplace `openai-primary-runtime`",
+      "/runtime/marketplace.json",
+      "",
+      "PLUGIN                            STATUS              VERSION       PATH",
+      "documents@openai-primary-runtime  installed, enabled  26.513.11550  /runtime/documents",
+    ].join("\n");
+    const plugins = parseCodexPluginList(text);
+    expect(plugins.map((p) => `${p.name}@${p.marketplace}`).sort()).toEqual([
+      "documents@openai-primary-runtime",
+      "foo@plugins-cli",
+    ]);
   });
 });
 

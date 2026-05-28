@@ -47,7 +47,7 @@ src/
     index.ts          → MCP adapter registry (all 11)
   plugins/            → plugin layer (claude ↔ codex only)
     claude.ts         → read (claude plugin list --json) + installPlugin + removePlugin
-    codex.ts          → read (config.toml [plugins.*]) + installPlugin + removePlugin
+    codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace) + removePlugin
     mirror.ts         → primary → other plugin agent: diff installs/removes, --remove-stale guard
     shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier
     types.ts          → PluginAdapter interface + records
