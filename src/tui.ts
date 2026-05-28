@@ -143,13 +143,29 @@ async function doMirror() {
     return;
   }
   const applied = await runMirror({ from: primary, apply: true, removeStale });
+  let installed = 0;
+  let skipped = 0;
   let failed = 0;
   for (const t of applied.targets) {
-    for (const i of t.installs ?? []) if (i.status === "failed") failed += 1;
+    for (const i of t.installs ?? []) {
+      if (i.status === "failed") failed += 1;
+      else if (i.status === "skipped") skipped += 1;
+      else if (i.status === "installed") installed += 1;
+    }
     for (const r of t.removes ?? []) if (r.status === "failed") failed += 1;
   }
-  if (failed > 0) log.error(`${failed} install/remove(s) failed — run \`syncthis mirror ${primary}\` for detail`);
-  else log.success("mirror complete.");
+  const summary = [
+    `${installed} installed`,
+    skipped ? `${skipped} skipped` : "",
+    failed ? `${failed} failed` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  // Skips (no Codex marketplace / ambiguous) are expected, not errors. Only a
+  // real install error makes this a failure worth flagging loudly.
+  if (failed > 0) log.error(`${summary} — run \`syncthis mirror ${primary}\` for detail`);
+  else if (skipped > 0) log.success(`mirror complete: ${summary} (skipped need their marketplace added in Codex).`);
+  else log.success(`mirror complete: ${summary}.`);
 }
 
 async function doDoctor() {

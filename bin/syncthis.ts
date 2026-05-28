@@ -165,13 +165,21 @@ function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) 
 }
 
 function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) {
+  let installed = 0;
+  let skipped = 0;
   let failed = 0;
   for (const t of r.targets) {
     for (const ins of t.installs ?? []) {
       if (ins.status === "failed") {
         failed += 1;
         row("failed", t.to, ins.target, ins.message);
+      } else if (ins.status === "skipped") {
+        // Can't be mirrored to this target (no marketplace / ambiguous) — not
+        // an error. Surface the reason so it's clear why, but don't fail the run.
+        skipped += 1;
+        row("skipped", t.to, ins.target, ins.message);
       } else if (ins.status === "installed") {
+        installed += 1;
         row("synced", t.to, ins.target, "installed");
       }
     }
@@ -184,10 +192,14 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
       }
     }
   }
-  if (failed > 0) {
-    console.log(red(`\n${failed} install/remove(s) failed.`));
-    process.exit(1);
-  }
+  const parts = [
+    installed ? green(`${installed} installed`) : "",
+    skipped ? dim(`${skipped} skipped`) : "",
+    failed ? red(`${failed} failed`) : "",
+  ].filter(Boolean);
+  if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
+  // Only a genuine `codex plugin add` error is a failure; skips are expected.
+  if (failed > 0) process.exit(1);
 }
 
 async function cmdPlugin(argv: string[]) {

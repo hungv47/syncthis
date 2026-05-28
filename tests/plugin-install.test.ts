@@ -171,11 +171,11 @@ describe("codex installPlugin", () => {
     expect(invocations.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
   });
 
-  test("fails clearly when a bare name is in no Codex marketplace", async () => {
+  test("skips (not fails) when a bare name is in no Codex marketplace", async () => {
     await installFakeCli("codex", codexListTable([["other@plugins-cli", "not installed", "", "/cache/other"]]));
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
-    expect(res.status).toBe("failed");
-    expect(res.message).toContain("not available in any registered Codex marketplace");
+    expect(res.status).toBe("skipped");
+    expect(res.message).toContain("no registered Codex marketplace");
     const invocations = await readInvocations();
     expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
   });
@@ -195,7 +195,7 @@ describe("codex installPlugin", () => {
     expect(invocations.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
   });
 
-  test("still fails on ambiguity when plugins-cli is not a candidate", async () => {
+  test("skips on ambiguity when plugins-cli is not a candidate", async () => {
     await installFakeCli(
       "codex",
       codexListTable([
@@ -204,8 +204,8 @@ describe("codex installPlugin", () => {
       ]),
     );
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false });
-    expect(res.status).toBe("failed");
-    expect(res.message).toContain("multiple Codex marketplaces");
+    expect(res.status).toBe("skipped");
+    expect(res.message).toContain("ambiguous across Codex marketplaces");
     const invocations = await readInvocations();
     expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
   });

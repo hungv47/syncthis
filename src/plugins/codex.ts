@@ -146,11 +146,13 @@ export const codexPluginAdapter: PluginAdapter = {
       if (candidates.length === 1) {
         marketplace = candidates[0];
       } else if (candidates.length === 0) {
+        // Not a failure — Codex simply has no marketplace that provides this
+        // plugin, so there is nothing to attempt. Skip with a reason.
         return {
           agent: "codex",
           target: name,
-          status: "failed",
-          message: "not available in any registered Codex marketplace — add its marketplace first (codex plugin marketplace add ...)",
+          status: "skipped",
+          message: "no registered Codex marketplace provides it — add its marketplace first (codex plugin marketplace add ...)",
         };
       } else if (candidates.includes(PREFERRED_MARKETPLACE)) {
         // Ambiguous, but prefer plugins-cli — the npx-plugins ecosystem these
@@ -160,8 +162,8 @@ export const codexPluginAdapter: PluginAdapter = {
         return {
           agent: "codex",
           target: name,
-          status: "failed",
-          message: `available in multiple Codex marketplaces (${candidates.join(", ")}) — pass <name>@<marketplace> to disambiguate`,
+          status: "skipped",
+          message: `ambiguous across Codex marketplaces (${candidates.join(", ")}) — pass <name>@<marketplace> to choose`,
         };
       }
     }
