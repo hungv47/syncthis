@@ -74,6 +74,51 @@ exit 0
   process.env.PATH = `${binDir()}:${originalPath ?? ""}`;
 }
 
+// A codex fake whose `plugin list` shows the given ids as registered-but-not-installed
+// (so they're resolvable for `plugin add`), and whose `plugin add` succeeds for every
+// target EXCEPT `<mismatchName>@…`, which errors with the multi-plugin alias mismatch
+// (`<canonical>` ≠ `<mismatchName>`) — exactly how Codex rejects aliased bundles.
+async function fakeCodexMismatch(
+  availableIds: string[],
+  mismatchName: string,
+  canonical: string,
+  installedIds: string[] = [],
+) {
+  await mkdir(binDir(), { recursive: true });
+  const out = codexList([
+    ...installedIds.map((id): CodexRow => [id, "installed, enabled", "1.0.0", `/cache/${id.split("@")[0]}`]),
+    ...availableIds.map((id): CodexRow => [id, "not installed", "", `/cache/${id.split("@")[0]}`]),
+  ]);
+  const f = join(workDir, "codex-list.txt");
+  await writeFile(f, out);
+  const script = `#!/bin/sh
+echo "codex $@" >> ${log()}
+if [ "$1 $2" = "plugin list" ]; then cat ${f}; exit 0; fi
+if [ "$1 $2 $3" = "plugin add --" ]; then
+  case "$4" in
+    ${mismatchName}@*) echo "plugin.json name \\\`${canonical}\\\` does not match marketplace plugin name \\\`${mismatchName}\\\`" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+exit 0
+`;
+  await writeFile(join(binDir(), "codex"), script);
+  await chmod(join(binDir(), "codex"), 0o755);
+  process.env.PATH = `${binDir()}:${originalPath ?? ""}`;
+}
+
+// Write a `~/.claude/plugins/known_marketplaces.json` + a cloned marketplace whose
+// marketplace.json declares `pluginNames`. This is what resolveInstalledRepoCoverage
+// reads to map a target's installed (canonical) plugin name back to its source repo.
+async function fakeKnownMarketplace(mktName: string, repo: string, pluginNames: string[]) {
+  const loc = join(workDir, "mkts", mktName);
+  await mkdir(join(loc, ".claude-plugin"), { recursive: true });
+  await writeFile(join(loc, ".claude-plugin", "marketplace.json"), JSON.stringify({ name: mktName, plugins: pluginNames.map((name) => ({ name })) }));
+  const known = join(workDir, ".claude", "plugins");
+  await mkdir(known, { recursive: true });
+  await writeFile(join(known, "known_marketplaces.json"), JSON.stringify({ [mktName]: { source: { source: "github", repo }, installLocation: loc } }));
+}
+
 async function fakeNpx() {
   await mkdir(binDir(), { recursive: true });
   const script = `#!/bin/sh
@@ -151,7 +196,7 @@ describe("mirror cursor push", () => {
   });
 });
 
-describe("mirror codex skills-fallback (--provision)", () => {
+describe("mirror codex skills-fallback (provisioning on by default)", () => {
   test("a skills-only bundle Codex can't load is added to Codex as skills", async () => {
     // Claude has `kit` under a github marketplace; Codex's plugin-list never shows
     // it, even after provisioning → skills-only bundle. It must fall back to
@@ -160,7 +205,7 @@ describe("mirror codex skills-fallback (--provision)", () => {
     await fakeCodex([]); // Codex has nothing, and its list never exposes `kit`
     await fakeNpx(); // `plugins add` (provision + cursor) and `skills add` all exit 0
 
-    const report = await runMirror({ from: "claude-code", apply: true, provision: true });
+    const report = await runMirror({ from: "claude-code", apply: true }); // provision defaults on
     const codex = report.targets.find((t) => t.to === "codex")!;
 
     // The native install skipped (skills-only) but carried the fallback repo…
@@ -174,16 +219,95 @@ describe("mirror codex skills-fallback (--provision)", () => {
     expect(inv.some((l) => l.trim() === "npx -y skills add owner/kit -g -s * -a codex -y")).toBe(true);
   });
 
-  test("without --provision there is no skills-fallback (stays a plain skip)", async () => {
+  test("--no-provision (provision:false) skips the bundle with no skills-fallback", async () => {
     await fakeClaude([{ id: "kit@mkt1" }], [{ name: "mkt1", source: "github", repo: "owner/kit" }]);
     await fakeCodex([]);
     await fakeNpx();
 
-    const report = await runMirror({ from: "claude-code", apply: true }); // no provision
+    const report = await runMirror({ from: "claude-code", apply: true, provision: false });
     const codex = report.targets.find((t) => t.to === "codex")!;
     const attempt = codex.installs!.find((i) => i.target === "kit");
     expect(attempt?.status).toBe("skipped");
     expect(attempt?.skillsFallbackRepo).toBeUndefined();
+    expect(codex.skillsFallback).toBeUndefined();
+
+    const inv = await invocations();
+    expect(inv.some((l) => /skills add/.test(l))).toBe(false);
+  });
+
+  test("an unloadable alias is NOT re-added as skills when its repo already landed as a plugin", async () => {
+    // browse + browser-trace are two aliases of one bundle (repo owner/bundle).
+    // `browse` installs on Codex (canonical); `browser-trace` hits the name-mismatch
+    // and would carry a skills-fallback — but since owner/bundle is already a plugin
+    // on Codex, the mirror must drop the fallback (no flat/namespaced duplication).
+    await fakeClaude(
+      [{ id: "browse@bb" }, { id: "browser-trace@bb" }],
+      [{ name: "bb", source: "github", repo: "owner/bundle" }],
+    );
+    // Codex snapshot: both aliases registered (not installed). `browse` add succeeds;
+    // `browser-trace` add fails with the mismatch (handled by the codex fake below).
+    await fakeCodexMismatch(["browse@plugins-cli", "browser-trace@plugins-cli"], "browser-trace", "browse");
+    await fakeNpx();
+
+    const report = await runMirror({ from: "claude-code", apply: true });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    const browse = codex.installs!.find((i) => i.target.startsWith("browse@"));
+    const trace = codex.installs!.find((i) => i.target.startsWith("browser-trace@"));
+    expect(browse?.status).toBe("installed");
+    expect(trace?.status).toBe("skipped");
+    // Covered by the canonical sibling → fallback dropped, no skills add for the repo.
+    expect(trace?.coveredBy).toBeDefined();
+    expect(trace?.skillsFallbackRepo).toBeUndefined();
+    expect(codex.skillsFallback).toBeUndefined();
+
+    const inv = await invocations();
+    expect(inv.some((l) => /skills add/.test(l))).toBe(false);
+  });
+
+  test("re-run: a URL-named plugin is covered via marketplace-name match (canonical name differs), no skills-fallback", async () => {
+    // The `github.com-*` re-run case: Claude installed `github.com-owner-tool`; the
+    // repo's canonical plugin is `tool`, already installed on Codex from run 1. The
+    // asked name never resolves (candidates 0) and provisioning installs nothing new,
+    // so codex.ts hands back a skills-fallback repo — but the mirror recognizes the
+    // repo is already covered by matching Codex's installed `tool` against the
+    // marketplace's declared plugin names, and drops the fallback (no flat-skill dup).
+    await fakeClaude([{ id: "github.com-owner-tool@gh-mkt" }], [{ name: "gh-mkt", source: "github", repo: "owner/tool" }]);
+    await fakeKnownMarketplace("gh-mkt", "owner/tool", ["tool"]);
+    await fakeCodex(["tool@plugins-cli"]); // canonical `tool` already installed
+    await fakeNpx();
+
+    const report = await runMirror({ from: "claude-code", apply: true });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    const attempt = codex.installs!.find((i) => i.target === "github.com-owner-tool");
+    expect(attempt?.status).toBe("skipped");
+    expect(attempt?.skillsFallbackRepo).toBeUndefined(); // reclassified covered by the mirror
+    expect(codex.skillsFallback).toBeUndefined();
+
+    const inv = await invocations();
+    expect(inv.some((l) => /skills add/.test(l))).toBe(false);
+  });
+
+  test("re-run: an unloadable alias is covered (not re-added as skills) when its canonical sibling is ALREADY installed", async () => {
+    // Steady state after a prior mirror: canonical `browse` is already installed on
+    // Codex, so it's NOT in this run's add-set; only the unloadable alias
+    // `browser-trace` remains. The mismatch must be recognized as covered by the
+    // already-present canonical — never `npx skills add` (which would duplicate
+    // browse's namespaced skills flat). Regression for the re-run dedup gap.
+    await fakeClaude(
+      [{ id: "browse@bb" }, { id: "browser-trace@bb" }],
+      [{ name: "bb", source: "github", repo: "owner/bundle" }],
+    );
+    await fakeCodexMismatch(["browser-trace@plugins-cli"], "browser-trace", "browse", ["browse@plugins-cli"]);
+    await fakeNpx();
+
+    const report = await runMirror({ from: "claude-code", apply: true });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    // browse already installed → not in add; only browser-trace is attempted.
+    expect(codex.installs!.some((i) => i.target.startsWith("browse@"))).toBe(false);
+    const trace = codex.installs!.find((i) => i.target.startsWith("browser-trace@"));
+    expect(trace?.status).toBe("skipped");
+    expect(trace?.coveredBy).toBeDefined();
+    expect(trace?.skillsFallbackRepo).toBeUndefined();
     expect(codex.skillsFallback).toBeUndefined();
 
     const inv = await invocations();

@@ -1,16 +1,19 @@
-// Plugin mirror — destructive primary → other-agent sync.
+// Plugin mirror — additive primary → other-agent propagation.
 //
-// Reads the primary agent's installed plugins, diffs against the other plugin
-// agent, and applies installs (and, with --remove-stale, removes) via each
-// adapter's native CLI. Always shows a diff and prompts for confirmation OR
-// honors --yes. The native-CLI cohort is the two bundle agents (Claude, Codex);
-// both implement installPlugin + removePlugin.
+// Reads the primary agent's installed plugins and makes that content reachable on
+// every other agent, by the best mechanism each one has:
+//   • Codex (native read+write plugin CLI): install each plugin; provision its
+//     marketplace first when missing (on by default). A plugin Codex can't load as
+//     a plugin — a skills-only bundle, or a multi-plugin marketplace alias whose
+//     plugin.json name Codex rejects — falls back to `npx skills add` UNLESS the
+//     same repo already landed as a real plugin (no flat/namespaced duplication).
+//   • Cursor (write-only plugin target, no list CLI): pushed by source repo via
+//     `npx plugins add <repo> --target cursor` — additive, can't be diffed.
+//   • The non-plugin agents (gemini, kimi, opencode, …): receive the primary's
+//     plugin-bundled skills via `npx skills add` (vercel-labs/skills).
 //
-// Cursor is a third plugin target, but write-only: it has no plugin-list CLI, so
-// we can't read its state, diff it, or remove from it. Instead it receives the
-// primary's plugins by source repo via `npx plugins add <repo> --target cursor`
-// — additive only. Source repos come from the primary's marketplace→repo map,
-// which only Claude exposes, so cursor push is supported from a Claude primary.
+// It is additive only: there is no uninstall path anywhere. A mirror can add a
+// plugin/skill to an agent, never remove one — so a mistake can't wipe plugins.
 
 import { pluginAdapters } from "./index.ts";
 import { isSafeRepoSlug, run } from "./shell.ts";
@@ -19,18 +22,22 @@ import type {
   PluginAdapterRead,
   PluginInstallResult,
   PluginRecord,
-  PluginRemoveResult,
 } from "./types.ts";
-import { addSkillRepos, type SkillAddResult } from "../skills.ts";
+import {
+  addSkillRepos,
+  addSkillsFromPlugins,
+  resolveInstalledRepoCoverage,
+  resolvePluginSkillSources,
+  skillCohort,
+  type PluginSkillsReport,
+} from "../skills.ts";
 import type { AgentId } from "../types.ts";
 
 const CURSOR_PLUGINS_TIMEOUT_MS = 180_000;
 
 export type MirrorDiff = {
-  // Plugins present in primary but missing from target → install
+  // Plugins present in primary but missing from the target → install (additive).
   add: PluginRecord[];
-  // Plugins present in target but not primary → remove
-  remove: PluginRecord[];
 };
 
 export type MirrorTarget = {
@@ -40,9 +47,8 @@ export type MirrorTarget = {
   diff: MirrorDiff | null;
   unsupportedReason?: string;
   installs?: PluginInstallResult[];
-  removes?: PluginRemoveResult[];
   // Skills added to this target as a fallback for plugins it couldn't install
-  // natively (skills-only bundles). Populated on apply only. Today only Codex.
+  // natively (skills-only bundles / unloadable aliases). Populated on apply only.
   skillsFallback?: SkillAddResult[];
 };
 
@@ -59,24 +65,35 @@ export type CursorPush = {
   results: CursorPushResult[];
 };
 
+// The non-plugin agents' skill push. Driven from the primary's plugin-bundled
+// skills (only a Claude primary can supply them). `report` carries the source
+// repos (preview) and per-repo `npx skills add` results (apply).
+export type MirrorSkillCohort = {
+  supported: boolean;
+  reason?: string;
+  agents: AgentId[];
+  report?: PluginSkillsReport;
+};
+
 export type MirrorReport = {
   from: AgentId;
   fromRead: PluginAdapterRead;
   targets: MirrorTarget[];
   cursor: CursorPush;
+  skillCohort: MirrorSkillCohort;
   applied: boolean;
 };
 
 export type MirrorRunOpts = {
   from: AgentId;
   apply: boolean;
-  // When true, also remove plugins from targets that aren't in primary.
-  // Default false — additive by default, destructive only when asked.
-  removeStale?: boolean;
-  // When true, a target may register a missing marketplace before installing
-  // (Codex shells `npx plugins add <repo> --target codex`). Off by default.
+  // Register a missing marketplace on a target before installing, and fall unloadable
+  // bundles back to skills. ON by default (the point of a mirror is to make content
+  // reachable); pass false (`--no-provision`) for an offline / no-network run.
   provision?: boolean;
 };
+
+type SkillAddResult = Awaited<ReturnType<typeof addSkillRepos>>[number];
 
 function adapterFor(id: AgentId): PluginAdapter | undefined {
   return pluginAdapters.find((a) => a.id === id);
@@ -93,6 +110,7 @@ function indexByName(plugins: PluginRecord[]): Map<string, PluginRecord> {
 }
 
 export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
+  const provision = opts.provision ?? true;
   const primary = adapterFor(opts.from);
   if (!primary) {
     throw new Error(
@@ -101,30 +119,14 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
   }
   const fromRead = await primary.read();
 
-  // P1 SAFETY: an errored primary read returns `{ error, plugins: [] }`. With
-  // --remove-stale set, an empty fromIdx would mark *every* plugin in every
-  // target as stale and queue them all for deletion. The interactive diff
-  // catches this for a human; non-interactive `--yes` does not. Refuse the
-  // dangerous case before computing any removes (sacred rule #1: no implicit
-  // deletion).
-  if (opts.removeStale && fromRead.error) {
-    throw new Error(
-      `mirror: refusing --remove-stale because primary ${opts.from} is unreadable: ${fromRead.error}. Re-run without --remove-stale, or fix the primary first.`,
-    );
-  }
-  if (opts.removeStale && fromRead.plugins.length === 0) {
-    throw new Error(
-      `mirror: refusing --remove-stale because primary ${opts.from} reports zero plugins — that would uninstall every plugin from the other agent. If you really want to clear them, uninstall directly with that agent's CLI (\`claude plugin uninstall\` / \`codex plugin remove\`).`,
-    );
-  }
-  // The primary's marketplace name → owner/repo. Used by --provision (so a Codex
-  // target can register a marketplace it lacks) and by the cursor push (which is
-  // entirely repo-based). Fetched once; only Claude implements it. Needed for the
-  // preview too, so fetch whenever available rather than only on apply/provision.
+  // The primary's marketplace name → owner/repo. Used to provision a marketplace a
+  // target lacks, by the cursor push, and to map a plugin to its skills-fallback
+  // repo. Fetched once; only Claude implements it. Needed for the preview too.
   let sources: Map<string, string> | null | undefined;
   if (primary.marketplaceSources) {
     sources = await primary.marketplaceSources();
   }
+  const repoOf = (p: PluginRecord): string | undefined => (p.marketplace ? sources?.get(p.marketplace) : undefined);
 
   const targets: MirrorTarget[] = [];
 
@@ -143,44 +145,56 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     const add: PluginRecord[] = [];
     for (const [name, p] of fromIdx) if (!toIdx.has(name)) add.push(p);
 
-    const remove: PluginRecord[] = [];
-    if (opts.removeStale) {
-      for (const [name, p] of toIdx) if (!fromIdx.has(name)) remove.push(p);
-    }
-
-    const target: MirrorTarget = { to: a.id, toRead, diff: { add, remove } };
+    const target: MirrorTarget = { to: a.id, toRead, diff: { add } };
 
     if (opts.apply) {
-      // Install by bare name and let the target resolve its own marketplace —
-      // the primary's marketplace tag won't exist on the target. removePlugin
-      // re-resolves the target's own tag from its config.
+      // Install by bare name and let the target resolve its own marketplace — the
+      // primary's marketplace tag won't exist on the target.
       const installs: PluginInstallResult[] = [];
       for (const p of add) {
-        installs.push(
-          await a.installPlugin(p.name, {
-            dryRun: false,
-            provision: opts.provision,
-            sourceRepo: p.marketplace ? sources?.get(p.marketplace) : undefined,
-          }),
-        );
+        installs.push(await a.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p) }));
       }
       target.installs = installs;
-      // Skills-fallback: any skipped install that handed back a source repo is a
-      // bundle this target can't load as a plugin (a skills-only bundle on Codex).
-      // Add its skills loosely so the content still reaches the agent — additive,
-      // and safe from duplication since there's no plugin here to collide with.
-      const fallbackRepos = installs
-        .map((i) => i.skillsFallbackRepo)
-        .filter((r): r is string => !!r);
+
+      // Repos that are on this target as a real plugin — so their skills are present
+      // namespaced and must NOT be re-added flat via `npx skills add` (duplication).
+      const coveredRepos = new Set<string>();
+      // (a) Already installed on the target BEFORE this run — a prior mirror's
+      // canonical install, or a sibling of the same bundle. Matched by the
+      // marketplace's DECLARED plugin names (not the primary's install id), so it
+      // covers the case where the target's canonical name differs from the primary's
+      // (`github.com-*` URL-named plugins). Without this, every re-run would re-add
+      // the bundle's skills flat for the alias still left in `add`. (Claude primary
+      // only — the coverage map comes from Claude's marketplace clones.)
+      if (opts.from === "claude-code") {
+        const installedNames = new Set(toRead.plugins.map((p) => p.name));
+        for (const r of await resolveInstalledRepoCoverage(installedNames)) coveredRepos.add(r);
+      }
+      // (b) Landed during this run — directly installed, already present, or covered
+      // (provisioning installed the bundle under its canonical name).
+      add.forEach((p, i) => {
+        const r = repoOf(p);
+        if (!r) return;
+        const ins = installs[i]!;
+        if (ins.status === "installed" || ins.status === "present" || ins.coveredBy) coveredRepos.add(r);
+      });
+      // An unloadable alias whose canonical sibling DID install is covered too —
+      // reclassify it (drop the fallback) so its skills aren't added redundantly.
+      for (const ins of installs) {
+        if (ins.skillsFallbackRepo && coveredRepos.has(ins.skillsFallbackRepo)) {
+          ins.coveredBy = ins.coveredBy ?? "the bundle's canonical plugin";
+          ins.message = `covered by the bundle's canonical plugin on ${a.id} — not re-added as skills`;
+          ins.skillsFallbackRepo = undefined;
+        }
+      }
+
+      // Remaining fallback repos: genuinely unloadable on this target AND not
+      // already present as a plugin. Add their skills loosely so the content lands.
+      const fallbackRepos = [
+        ...new Set(installs.map((i) => i.skillsFallbackRepo).filter((r): r is string => !!r)),
+      ];
       if (fallbackRepos.length) {
         target.skillsFallback = await addSkillRepos(fallbackRepos, [a.id]);
-      }
-      if (opts.removeStale) {
-        const removes: PluginRemoveResult[] = [];
-        for (const p of remove) {
-          removes.push(await a.removePlugin(p.name, { dryRun: false, prune: true }));
-        }
-        target.removes = removes;
       }
     }
 
@@ -188,8 +202,9 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
   }
 
   const cursor = await pushToCursor(fromRead, sources, opts.apply);
+  const skillCohortPush = await pushToSkillCohort(opts.from, opts.apply);
 
-  return { from: opts.from, fromRead, targets, cursor, applied: opts.apply };
+  return { from: opts.from, fromRead, targets, cursor, skillCohort: skillCohortPush, applied: opts.apply };
 }
 
 // Install the primary's plugins onto Cursor by source repo. Cursor has no
@@ -208,7 +223,7 @@ async function pushToCursor(
   if (sources === undefined) {
     return {
       supported: false,
-      reason: "primary can't supply github source repos for `npx plugins` — run `syncthis mirror claude` to populate cursor",
+      reason: "primary can't supply github source repos for `npx plugins` — run `syncthis mirror claude-code` to populate cursor",
       repos: [],
       results: [],
     };
@@ -253,9 +268,33 @@ async function pushToCursor(
   return { supported: true, repos, results };
 }
 
+// Surface the primary's plugin-bundled skills to the non-plugin agents (gemini,
+// kimi, opencode, …) via `npx skills add`. The source repos come from the Claude
+// plugin store, so only a Claude primary can supply them — a Codex primary is
+// reported unsupported with a clear reason (matching the cursor push).
+async function pushToSkillCohort(from: AgentId, apply: boolean): Promise<MirrorSkillCohort> {
+  const agents = skillCohort();
+  if (from !== "claude-code") {
+    return {
+      supported: false,
+      reason: "skill propagation reads Claude's installed plugins — run `syncthis mirror claude-code`",
+      agents,
+    };
+  }
+  if (!apply) {
+    // Preview is local-only (no `npx skills` subprocess): just resolve the repos.
+    const sources = await resolvePluginSkillSources();
+    return { supported: true, agents, report: { ran: sources.length > 0, dryRun: true, agents, sources, results: [] } };
+  }
+  const report = await addSkillsFromPlugins({ agents });
+  return { supported: true, agents, report };
+}
+
 export function mirrorHasChanges(report: MirrorReport): boolean {
+  const skillSources = report.skillCohort.supported ? report.skillCohort.report?.sources.length ?? 0 : 0;
   return (
-    report.targets.some((t) => t.diff && (t.diff.add.length > 0 || t.diff.remove.length > 0)) ||
-    report.cursor.repos.length > 0
+    report.targets.some((t) => t.diff && t.diff.add.length > 0) ||
+    report.cursor.repos.length > 0 ||
+    skillSources > 0
   );
 }

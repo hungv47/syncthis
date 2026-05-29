@@ -6,8 +6,6 @@ import type {
   PluginInstallOpts,
   PluginInstallResult,
   PluginRecord,
-  PluginRemoveOpts,
-  PluginRemoveResult,
 } from "./types.ts";
 
 const CONFIG_PATH = "~/.claude.json";
@@ -19,6 +17,14 @@ type ClaudePluginListItem = {
   enabled?: boolean;
   installPath?: string;
 };
+
+// The `claude` CLI loads every plugin/MCP on startup, so a cold invocation can run
+// several seconds (occasionally >15s on a loaded machine with many marketplaces).
+// The default 15s `run()` timeout is too tight for it: a timed-out plugin-list read
+// returns an empty primary, which would make a mirror silently look like "nothing
+// to do". Give the reads generous headroom; installs may also clone, so longer.
+const READ_TIMEOUT_MS = 60_000;
+const INSTALL_TIMEOUT_MS = 180_000;
 
 function resolvedConfigPath(): string {
   return expandHome(CONFIG_PATH);
@@ -35,7 +41,7 @@ export const claudePluginAdapter: PluginAdapter = {
       plugins: [],
     };
 
-    const pluginsRes = await run("claude", ["plugin", "list", "--json"]);
+    const pluginsRes = await run("claude", ["plugin", "list", "--json"], { timeoutMs: READ_TIMEOUT_MS });
     if (pluginsRes.notFound) return { ...base, error: "claude CLI not found on PATH" };
     if (!pluginsRes.ok) return { ...base, error: pluginsRes.stderr.trim() || `claude plugin list exit ${pluginsRes.exitCode}` };
 
@@ -66,7 +72,7 @@ export const claudePluginAdapter: PluginAdapter = {
   // marketplace it lacks. Local/non-github sources are omitted (no repo to add).
   async marketplaceSources(): Promise<Map<string, string> | null> {
     const map = new Map<string, string>();
-    const res = await run("claude", ["plugin", "marketplace", "list", "--json"]);
+    const res = await run("claude", ["plugin", "marketplace", "list", "--json"], { timeoutMs: READ_TIMEOUT_MS });
     if (!res.ok) return null;
     let raw: unknown;
     try {
@@ -96,44 +102,9 @@ export const claudePluginAdapter: PluginAdapter = {
       if (found) return { agent: "claude-code", target, status: "present" };
     }
     if (opts.dryRun) return { agent: "claude-code", target, status: "installed", message: "dry-run" };
-    const res = await run("claude", ["plugin", "install", "--yes", "--", target]);
+    const res = await run("claude", ["plugin", "install", "--yes", "--", target], { timeoutMs: INSTALL_TIMEOUT_MS });
     if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
     if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
     return { agent: "claude-code", target, status: "installed" };
-  },
-
-  async removePlugin(name: string, opts: PluginRemoveOpts): Promise<PluginRemoveResult> {
-    const read = await this.read();
-    if (read.error) return { agent: "claude-code", target: name, status: "failed", message: read.error };
-    // Accept bare name or fully-qualified <name>@<marketplace>.
-    const { name: bare, marketplace: explicitMkt } = parsePluginId(name);
-    try {
-      assertSafeIdentifier(bare, "plugin name");
-      if (explicitMkt) assertSafeIdentifier(explicitMkt, "marketplace name");
-    } catch (err) {
-      return { agent: "claude-code", target: name, status: "failed", message: (err as Error).message };
-    }
-    const matches = read.plugins.filter(
-      (p) => p.name === bare && (!explicitMkt || p.marketplace === explicitMkt),
-    );
-    if (matches.length === 0) return { agent: "claude-code", target: name, status: "absent" };
-    if (matches.length > 1) {
-      return {
-        agent: "claude-code",
-        target: name,
-        status: "failed",
-        message: `ambiguous — installed under multiple marketplaces: ${matches.map((m) => m.marketplace).join(", ")}. Pass <name>@<marketplace> to disambiguate.`,
-      };
-    }
-    const match = matches[0]!;
-    const target = match.marketplace ? `${match.name}@${match.marketplace}` : match.name;
-    if (opts.dryRun) return { agent: "claude-code", target, status: "removed", message: "dry-run" };
-    const args = ["plugin", "uninstall", "--yes"];
-    if (opts.prune) args.push("--prune");
-    args.push("--", target);
-    const res = await run("claude", args);
-    if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
-    if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
-    return { agent: "claude-code", target, status: "removed" };
   },
 };

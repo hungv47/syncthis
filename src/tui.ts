@@ -19,19 +19,19 @@ export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
 
   note(
-    "Shares your MCP servers + skills across every AI coding agent you use.\n" +
-      "It reads what each agent already has — it doesn't install anything new.\n" +
-      "Anything that overwrites or deletes always asks you first.",
+    "Copies your MCP servers, skills, and plugins between your AI coding agents\n" +
+      "(Claude Code, Cursor, Codex, and 8 more).\n" +
+      "It only ever ADDS — it never deletes, and asks before overwriting anything.",
     "what is this?",
   );
 
   const options: Array<{ value: PickerChoice; label: string; hint?: string }> = [
-    { value: "sync", label: "Sync everything  (recommended)", hint: "share MCP servers + skills across all agents — only adds, never deletes" },
-    { value: "mcp", label: "Sync MCP servers only", hint: "same as sync, but skip the skills step" },
-    { value: "skills", label: "Update skills only", hint: "refresh skills via npx skills update -y" },
-    { value: "mirror", label: "Copy plugins between agents", hint: "claude ↔ codex, and push to cursor — shows a preview, asks before writing" },
-    { value: "directional", label: "Copy MCP servers from one agent to another", hint: "overwrites the destination — shows a diff, asks before writing" },
-    { value: "doctor", label: "Check for problems", hint: "which servers each agent has + conflicts (read-only)" },
+    { value: "sync", label: "Sync everything  (recommended)", hint: "share MCP servers + skills across every agent — only adds" },
+    { value: "mirror", label: "Copy plugins across agents", hint: "install one agent's plugins on the others; the rest get the skills — only adds" },
+    { value: "mcp", label: "MCP servers only", hint: "share MCP servers, skip the skills step" },
+    { value: "skills", label: "Skills only", hint: "refresh skills via npx skills update" },
+    { value: "directional", label: "Copy MCP from one agent to another  (advanced)", hint: "overwrites the destination — shows a diff, asks first" },
+    { value: "doctor", label: "Check for problems", hint: "coverage + conflicts (read-only)" },
     { value: "plugin-list", label: "List installed plugins", hint: "what's installed per agent (read-only)" },
     { value: "quit", label: "Quit", hint: "" },
   ];
@@ -120,7 +120,7 @@ async function doSkills() {
 async function doMirror() {
   const pluginAgents = pluginAdapters.map((a) => ({ value: a.id, label: a.id }));
   const primaryRaw = await select({
-    message: "which agent is the primary (source of truth)?",
+    message: "which agent is the source of truth (primary)?",
     options: pluginAgents,
   });
   if (isCancel(primaryRaw)) {
@@ -129,35 +129,16 @@ async function doMirror() {
   }
   const primary = primaryRaw as AgentId;
 
-  const staleRaw = await select({
-    message: "also uninstall plugins not in primary? (--remove-stale)",
-    options: [
-      { value: "no", label: "no — additive only (install missing)" },
-      { value: "yes", label: "yes — also remove what primary doesn't have (destructive)" },
-    ],
-  });
-  if (isCancel(staleRaw)) {
-    cancel("aborted.");
-    return;
-  }
-  const removeStale = staleRaw === "yes";
+  // Provisioning is always on — registering missing marketplaces and falling
+  // unloadable bundles back to skills is the whole point. No extra question.
+  const provision = true;
 
-  const provisionRaw = await select({
-    message: "provision missing marketplaces on the target? (--provision)",
-    options: [
-      { value: "no", label: "no — install only what the target can already resolve" },
-      { value: "yes", label: "yes — register missing marketplaces via npx plugins (network, slower)" },
-    ],
-  });
-  if (isCancel(provisionRaw)) {
-    cancel("aborted.");
-    return;
+  const preview = await runMirror({ from: primary, apply: false, provision });
+  if (preview.fromRead.error) {
+    throw new Error(`can't read ${primary}'s plugins: ${preview.fromRead.error}`);
   }
-  const provision = provisionRaw === "yes";
-
-  const preview = await runMirror({ from: primary, apply: false, removeStale });
   if (!mirrorHasChanges(preview)) {
-    log.success("nothing to do — all targets already match primary.");
+    log.success("nothing to do — every agent already has the primary's plugin content.");
     return;
   }
   for (const t of preview.targets) {
@@ -165,13 +146,17 @@ async function doMirror() {
       log.info(`${t.to}: ${t.unsupportedReason}`);
       continue;
     }
-    if (!t.diff) continue;
-    const adds = t.diff.add.length;
-    const rms = t.diff.remove.length;
-    if (adds || rms) log.info(`${t.to}: +${adds} -${rms}`);
+    if (t.diff && t.diff.add.length) log.info(`${t.to}: +${t.diff.add.length} plugin(s)`);
+  }
+  if (preview.cursor.supported && preview.cursor.repos.length) {
+    log.info(`cursor: +${preview.cursor.repos.length} repo(s) (npx plugins; additive)`);
+  }
+  const sc = preview.skillCohort;
+  if (sc.supported && (sc.report?.sources.length ?? 0) > 0) {
+    log.info(`skills → ${sc.agents.length} non-plugin agents: ${sc.report!.sources.length} source repo(s)`);
   }
   const confirm = await select({
-    message: `apply mirror from ${primary} → all?`,
+    message: `apply mirror from ${primary} → every other agent? (additive — never uninstalls)`,
     options: [
       { value: "no", label: "no" },
       { value: "yes", label: "yes — write changes" },
@@ -181,30 +166,47 @@ async function doMirror() {
     cancel("aborted.");
     return;
   }
-  const applied = await runMirror({ from: primary, apply: true, removeStale, provision });
-  let installed = 0;
+  const applied = await runMirror({ from: primary, apply: true, provision });
+
+  let added = 0;
+  let covered = 0;
   let skipped = 0;
   let failed = 0;
   for (const t of applied.targets) {
     for (const i of t.installs ?? []) {
       if (i.status === "failed") failed += 1;
-      else if (i.status === "skipped") skipped += 1;
-      else if (i.status === "installed") installed += 1;
+      else if (i.status === "installed") added += 1;
+      else if (i.status === "skipped") {
+        if (i.skillsFallbackRepo) continue; // counted as a skills add below
+        else if (i.coveredBy) covered += 1;
+        else skipped += 1;
+      }
     }
-    for (const r of t.removes ?? []) if (r.status === "failed") failed += 1;
+    for (const sf of t.skillsFallback ?? []) {
+      if (sf.status === "failed") failed += 1;
+      else if (sf.status === "added") added += 1;
+      else skipped += 1; // "skipped" — bundle had no skills (matches the CLI tally)
+    }
   }
+  for (const res of applied.cursor.results) (res.status === "failed" ? (failed += 1) : (added += 1));
+  if (!applied.cursor.supported && applied.cursor.reason) skipped += 1;
+  if (!applied.skillCohort.supported && applied.skillCohort.reason) skipped += 1;
+  for (const res of applied.skillCohort.report?.results ?? []) {
+    if (res.status === "failed") failed += 1;
+    else if (res.status === "added") added += 1;
+  }
+
   const summary = [
-    `${installed} installed`,
+    `${added} added`,
+    covered ? `${covered} already covered` : "",
     skipped ? `${skipped} skipped` : "",
     failed ? `${failed} failed` : "",
   ]
     .filter(Boolean)
     .join(", ");
-  // Skips (no Codex marketplace / ambiguous) are expected, not errors. Only a
-  // real install error makes this a failure worth flagging loudly.
+  // Skips/covered are expected, not errors. Only a real CLI error fails loudly.
   if (failed > 0) log.error(`${summary} — run \`syncthis mirror ${primary}\` for detail`);
   else log.success(`mirror complete: ${summary}.`);
-  if (skipped > 0) log.info("some skipped plugins are skills bundles — run `syncthis run` to sync those as skills.");
 }
 
 async function doDoctor() {

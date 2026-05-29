@@ -2,6 +2,24 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.9.0] — 2026-05-29
+
+`mirror` now propagates a primary's plugin content to **every** other agent, can't fail on multi-plugin marketplaces, and can never uninstall.
+
+### Added
+- **`mirror` reaches the 8 non-plugin agents too.** After installing plugins on Codex and pushing to Cursor, a Claude-primary mirror now adds the primary's plugin-bundled skills to the non-plugin agents (gemini, kimi, opencode, …) via `npx skills add` — the same surface `run` uses, now driven by `mirror`. One command makes a plugin's content reachable everywhere: native plugin where loadable, skills everywhere else. The preview and summary show all three target groups (codex, cursor, skills→agents) — previously the TUI showed only Codex.
+
+### Fixed
+- **Multi-plugin marketplaces no longer fail the mirror.** Marketplaces like `browserbase`, `expo`, and `anthropics/skills` alias one bundle under several plugin names whose `plugin.json` name differs from the entry name. Claude tolerates this; Codex hard-rejects it (`plugin.json name X does not match marketplace plugin name Y`). The mirror was reporting these as hard failures. Now the canonical plugin installs, and each alias is recognized as **covered by the same bundle** (no error, no duplicate skills add).
+- **`github.com-*` plugins now reach Codex.** A plugin Claude named from a URL install (`github.com-garrytan-gstack`) never matched the repo's real plugin name (`gstack`). Provisioning installs it under the real name; the mirror detects the bundle landed (install-set diff) and marks it covered, falling back to skills only for genuinely skills-only repos — so no flat-vs-namespaced skill duplication on Codex.
+- **No skill duplication on re-runs / alias-only primaries.** The alias name-mismatch path now recognizes its canonical plugin being present (already installed from a prior run, or installed by this run's provision) and marks the alias `covered` instead of re-adding the bundle's skills flat. The mirror also seeds its covered-repo set from plugins already on the target. Without this, a second `mirror` (canonical already installed, only the unloadable alias left to sync) re-added the bundle's namespaced skills as flat skills every run.
+- **Plugin-list reads no longer time out silently.** `claude`/`codex plugin list` reads were on the 15s default timeout; a cold CLI start could exceed it, yielding an empty primary that looked like "nothing to mirror". Reads now get 60s, installs 180s, and a failed primary read aborts loudly instead of silently no-op'ing.
+
+### Changed
+- **Provisioning is on by default** (was `--provision`). Mirror registers missing marketplaces and falls unloadable bundles back to skills automatically — pass `--no-provision` for an offline/local run. The TUI no longer asks about it.
+- **`mirror` is additive only — `--remove-stale` is removed.** There is no longer any plugin-uninstall path anywhere in syncthis (the `removePlugin` adapter method and the destructive mirror prompt are gone), so a mirror can never wipe an agent's plugins.
+- TUI simplified: clearer one-line brief, shorter labels, and the mirror flow drops the remove-stale and provision questions.
+
 ## [0.8.0] — 2026-05-29
 
 Close the Codex coverage gap for skills-only plugin bundles.

@@ -34,11 +34,15 @@ async function installFakeCli(name: "claude" | "codex", listOutput: string, opts
       ? `if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi`
       : `if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi`;
+  // Escape backticks so the shell preserves them literally (the real Codex mismatch
+  // error quotes names in backticks, and the adapter parses the canonical name from
+  // them). An unescaped backtick in a double-quoted echo triggers command substitution.
+  const addStderr = (opts.addStderr ?? "fake failure").replace(/`/g, "\\`");
   const addCase =
     opts.exitOnAdd != null
       ? `case "$1 $2" in
   "plugin install"|"plugin add")
-    echo "${opts.addStderr ?? "fake failure"}" >&2
+    echo "${addStderr}" >&2
     exit ${opts.exitOnAdd}
     ;;
 esac`
@@ -303,15 +307,104 @@ describe("codex installPlugin", () => {
     expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
   });
 
-  test("no --provision flag: stays skipped even with a sourceRepo", async () => {
+  test("provision disabled (--no-provision): stays skipped even with a sourceRepo, no npx", async () => {
     await installProvisionFakes("foo");
-    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, sourceRepo: "acme/foo" });
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: false, sourceRepo: "acme/foo" });
     expect(res.status).toBe("skipped");
-    expect(res.message).toContain("retry with --provision");
+    expect(res.message).toContain("provisioning disabled");
     const inv = await readInvocations();
     expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
     // No provision attempted → no skills-fallback repo handed back.
     expect(res.skillsFallbackRepo).toBeUndefined();
+  });
+
+  test("provision: bundle installed under its canonical (different) name → covered, no skills fallback", async () => {
+    // Provisioning `acme/foo` installs the repo's canonical plugin `realfoo` (its
+    // plugin.json name), not the Claude-side name `foo` we asked for. The exact name
+    // stays unresolvable, but the bundle IS on Codex as a plugin → covered, and we
+    // must NOT hand back a skills-fallback repo (that would duplicate the plugin).
+    const binDir = join(workDir, "bin");
+    await mkdir(binDir, { recursive: true });
+    const sentinel = join(workDir, "provisioned2");
+    const absent = join(workDir, "codex-absent2.txt");
+    const present = join(workDir, "codex-present2.txt");
+    await writeFile(absent, codexListTable([["other@plugins-cli", "not installed", "", "/cache/other"]]));
+    await writeFile(
+      present,
+      codexListTable([
+        ["other@plugins-cli", "not installed", "", "/cache/other"],
+        ["realfoo@plugins-cli", "installed, enabled", "1.0.0", "/cache/realfoo"],
+      ]),
+    );
+    const codex = `#!/bin/sh
+echo "codex $@" >> ${invocationsFile}
+if [ "$1 $2" = "plugin list" ]; then if [ -f ${sentinel} ]; then cat ${present}; else cat ${absent}; fi; exit 0; fi
+exit 0
+`;
+    await writeFile(join(binDir, "codex"), codex);
+    await chmod(join(binDir, "codex"), 0o755);
+    const npx = `#!/bin/sh
+echo "npx $@" >> ${invocationsFile}
+if [ "$1 $2" = "plugins add" ]; then touch ${sentinel}; exit 0; fi
+exit 0
+`;
+    await writeFile(join(binDir, "npx"), npx);
+    await chmod(join(binDir, "npx"), 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
+    expect(res.status).toBe("skipped");
+    expect(res.coveredBy).toContain("realfoo");
+    expect(res.skillsFallbackRepo).toBeUndefined();
+    const inv = await readInvocations();
+    // It provisioned, but never tried `codex plugin add foo@...` (foo never resolved).
+    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
+  });
+
+  test("name-mismatch on `codex plugin add` is a skip with a skills-fallback repo, not a failure", async () => {
+    // A multi-plugin marketplace alias: the marketplace lists `alias` but the dir's
+    // plugin.json is `canonical` (which is NOT installed here). `codex plugin add
+    // alias@plugins-cli` errors with the mismatch — which must NOT be a hard failure;
+    // with provisioning on, the alias falls back to skills.
+    await installFakeCli("codex", codexListTable([["alias@plugins-cli", "not installed", "", "/cache/alias"]]), {
+      exitOnAdd: 1,
+      addStderr: "plugin.json name `canonical` does not match marketplace plugin name `alias`",
+    });
+    const res = await codexPluginAdapter.installPlugin!("alias", { dryRun: false, provision: true, sourceRepo: "owner/bundle" });
+    expect(res.status).toBe("skipped");
+    expect(res.skillsFallbackRepo).toBe("owner/bundle");
+    expect(res.message).toMatch(/won't load this alias/i);
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.trim() === "codex plugin add -- alias@plugins-cli")).toBe(true);
+  });
+
+  test("name-mismatch is COVERED (no fallback) when the canonical plugin is already installed", async () => {
+    // The mismatch error names the canonical (`canonical`); if it's already installed
+    // on Codex, the bundle's skills are here namespaced → covered, no flat skills add.
+    await installFakeCli(
+      "codex",
+      codexListTable([
+        ["canonical@plugins-cli", "installed, enabled", "1.0.0", "/cache/canonical"],
+        ["alias@plugins-cli", "not installed", "", "/cache/alias"],
+      ]),
+      { exitOnAdd: 1, addStderr: "plugin.json name `canonical` does not match marketplace plugin name `alias`" },
+    );
+    const res = await codexPluginAdapter.installPlugin!("alias", { dryRun: false, provision: true, sourceRepo: "owner/bundle" });
+    expect(res.status).toBe("skipped");
+    expect(res.coveredBy).toContain("canonical");
+    expect(res.skillsFallbackRepo).toBeUndefined();
+  });
+
+  test("name-mismatch under --no-provision skips with NO skills-fallback (no network)", async () => {
+    await installFakeCli("codex", codexListTable([["alias@plugins-cli", "not installed", "", "/cache/alias"]]), {
+      exitOnAdd: 1,
+      addStderr: "plugin.json name `canonical` does not match marketplace plugin name `alias`",
+    });
+    const res = await codexPluginAdapter.installPlugin!("alias", { dryRun: false, provision: false, sourceRepo: "owner/bundle" });
+    expect(res.status).toBe("skipped");
+    expect(res.skillsFallbackRepo).toBeUndefined();
+    expect(res.message).toMatch(/--no-provision/);
   });
 
   test("provision: a skills-only bundle skips with a skillsFallbackRepo for the mirror", async () => {

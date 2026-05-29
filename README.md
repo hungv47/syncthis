@@ -15,7 +15,7 @@ Every coding agent stores its MCP servers in its own file, its own format, its o
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
 - **MCP servers** — union sync across all 11 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
-- **Plugins** — `mirror` one agent's installed plugins onto the others. **Claude Code ↔ Codex** sync natively (each has a read+write plugin CLI); **Cursor** is a write-only target, pushed by source repo via `npx plugins add --target cursor` from a Claude primary.
+- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **8 non-plugin agents** get the bundled skills via `npx skills add`. Anything a target can't load as a plugin falls back to skills.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
 Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total.
@@ -52,7 +52,7 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
-| ✅ mirrors plugins between agents (Claude ↔ Codex natively; Cursor write-only) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ mirrors plugin content to every agent (plugins on Codex/Cursor; skills on the rest) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
 | ✅ lists installed plugins per agent (`plugin list`) | ❌ uninstalls plugins (use `claude plugin uninstall`, `codex plugin remove`) |
 
 ## How it works
@@ -84,16 +84,15 @@ syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every othe
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # MCP coverage + conflict report
 
-# Plugins (Claude ↔ Codex natively; Cursor write-only from a Claude primary)
-syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agents
+# Plugins → every agent (Codex/Cursor as plugins; the other 8 get the skills). Additive.
+syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # propagate primary's plugin content to every agent
 syncthis plugin list                        # list installed plugins per agent (read-only)
 syncthis help
 ```
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
-`--provision` (mirror) registers a plugin's source marketplace on the target before installing, when the target doesn't already have it (shells `npx plugins add` — hits the network). If the bundle still can't load as a Codex plugin (a skills-only bundle), its skills are added to Codex instead via `npx skills add`.
-`--remove-stale` (mirror) also uninstalls plugins on the target that the primary doesn't have.
+`--no-provision` (mirror) skips registering missing Codex marketplaces and the Codex skills-fallback — Codex installs only the plugins it can already resolve. (The Cursor push and the non-plugin-agent skills push still run; those are the mirror's payload, not provisioning.) By default mirror provisions: it registers a plugin's source marketplace on the target (`npx plugins add` — hits the network), and adds bundles a target can't load as plugins as skills (`npx skills add`).
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
 
@@ -175,33 +174,36 @@ syncthis rm executor --all --yes
 
 ## Plugins
 
-Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. Three agents can consume them: **Claude Code, Codex, and Cursor**. Claude ↔ Codex sync natively (each has a read+write `plugin` CLI). **Cursor** has no list CLI, so it's a **write-only** target: syncthis pushes the primary's plugins to it by source repo (`npx plugins add <repo> --target cursor`), additive-only, and only from a Claude primary (only Claude exposes the marketplace→repo map Cursor needs). So `mirror` does three things: list what's installed, sync Claude ↔ Codex, and push to Cursor.
+Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. `mirror` makes one agent's plugin **content** reachable on **every** other agent, by the best mechanism each has, and **additively — it never uninstalls**:
+
+- **Codex** consumes plugins natively (`codex plugin add`). syncthis installs each missing plugin and, by default, registers any marketplace Codex lacks first.
+- **Cursor** has no list CLI, so it's a **write-only** target: pushed by source repo (`npx plugins add <repo> --target cursor`), additive, from a Claude primary only.
+- **The other 8 agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`.
 
 ```bash
 # See what's installed where (read-only)
 syncthis plugin list
 
-# Make one agent the source of truth: install its plugins on the other
+# Make one agent the source of truth: propagate its plugins to every other agent
 syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
-syncthis mirror claude-code --provision --yes      # also register missing marketplaces on the target first
-syncthis mirror claude-code --remove-stale --yes   # also uninstall plugins the primary doesn't have
+syncthis mirror claude-code --no-provision --yes   # skip Codex marketplace registration + Codex skills-fallback
 ```
 
-`mirror` is destructive — it installs the primary's plugins onto the target (and with `--remove-stale`, uninstalls what the primary doesn't have). It shows a diff and prompts for confirmation unless you pass `--yes`. Installs delegate to the target's native CLI; nothing is written directly to a plugin cache.
+`mirror` shows a diff and prompts for confirmation unless you pass `--yes`. It only ever **adds** — there is no plugin-uninstall path, so a mirror can never wipe an agent's plugins. Installs delegate to each target's native CLI; nothing is written directly to a plugin cache.
 
-`mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and won't skip plugins the target only *appears* to have. It resolves each plugin to the target's own `<name>@<marketplace>` automatically.
+`mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and resolves each plugin to the target's own `<name>@<marketplace>` automatically.
 
-From a **Claude** primary, `mirror` also pushes every github-backed plugin to **Cursor** via `npx plugins add <repo> --target cursor`. Cursor's plugin state isn't readable, so this push is additive and unconditional (no diff, no stale removal) — re-running is idempotent on Cursor's side.
+**Provisioning is on by default.** When Codex doesn't yet have a plugin's marketplace, syncthis registers its source repo (`npx plugins add <owner/repo> --target codex`, repo from the primary's marketplace list) and installs it — which also installs the repo's canonical plugin. Pass `--no-provision` to skip that registration and the Codex skills-fallback — Codex then installs only the plugins it can already resolve. (It's not a fully offline switch: the Cursor and non-plugin-agent skills pushes still run.)
 
-A plugin the target can't install is reported as **skipped** with a reason, not a failure — the run only exits non-zero on a genuine install error. Two common skips:
+**Anything Codex can't load as a plugin becomes skills.** Two cases land here:
 
-- **Marketplace not registered on the target.** Add `--provision` and syncthis will register the plugin's source repo for you (`npx plugins add <owner/repo> --target codex`, repo read from the primary's marketplace list) and then install it. Off by default to keep `mirror` fast and local.
-- **Skills-only bundles.** Some "plugins" are really skill collections — Codex's plugin loader can't expose them. Under `--provision`, after the native install is skipped, `mirror` adds the bundle's skills to Codex via `npx skills add <repo> -a codex` (shown as a fallback row), so the content still reaches Codex. Without `--provision` it stays a plain skip, since we can't yet tell it's unloadable.
+- **Multi-plugin marketplaces.** Marketplaces like `browserbase`, `expo`, and `anthropics/skills` alias one bundle under several plugin names whose `plugin.json` name differs from the entry name. Claude installs every alias; Codex rejects the mismatch. syncthis installs the canonical plugin and marks each alias **covered** (its content is already there) — no error, no duplicate.
+- **Skills-only bundles.** Some "plugins" are really skill collections Codex's loader can't expose. After provisioning, syncthis adds the bundle's skills to Codex via `npx skills add <repo> -a codex` (a fallback row) — but only when no plugin from that repo already landed, so a plugin's namespaced skills are never duplicated as flat ones.
 
-Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`).
+Skipped plugins (no resolvable marketplace under `--no-provision`, or ambiguous) are reported with a reason, not a failure — the run only exits non-zero on a genuine install error.
 
-**Why not the other agents?** OpenCode plugins are npm runtime modules (a different format), and the remaining 7 agents have no GitHub-bundle plugin surface at all — so they can't be plugin-mirror targets. They still stay in MCP-sync scope, and they receive the *skills* bundled inside your Claude plugins via `npx skills` (see Skills below) — that's how the 8 non-plugin agents get the portable part of a plugin.
+Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`) — syncthis never removes a plugin.
 
 ## Desktop-owned servers
 
@@ -226,7 +228,8 @@ Run `syncthis doctor` first — it reports each agent's config status, per-serve
 | `refusing destructive write without --yes` (exit 2) | A destructive command (`<from> <to>`, `from --all`, `rm`, `mirror`) was run non-interactively (CI, pipe) with no TTY to confirm at. | Add `--yes` to confirm in non-interactive contexts, or run it in a terminal. |
 | `cannot read source <agent>: …` | The source agent's config is missing or malformed, so a directional sync would look like "delete everything." | syncthis bails before writing. Fix or create that agent's config, or sync from a different source. |
 | `target is a symlink, refusing to write through it` | The agent config (or its `.syncthis.bak`) is a symlink. | Intentional — syncthis won't clobber a symlink. Replace it with a regular file if you want syncthis to manage it. |
-| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace, or it's a skills-only bundle Codex can't load. Skips are expected, not failures. | Add `--provision`: it registers the marketplace, and for a skills-only bundle Codex still can't load, adds its skills to Codex via `npx skills add` (a fallback row). |
+| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace — only happens with `--no-provision`, or on an ambiguous marketplace. Skips are expected, not failures. | Drop `--no-provision` (the default): mirror registers the marketplace, and adds bundles a target can't load as plugins as skills via `npx skills add`. |
+| `mirror` reports plugins as `covered` | The bundle is already on the target as a plugin under its canonical name (a multi-plugin marketplace alias, or a URL-named plugin). | Nothing to do — `covered` means the content is present; it isn't re-added as skills (no duplication). |
 | `… CLI not found on PATH` during `mirror`/`plugin list` | The agent's own CLI (`claude`, `codex`, `npx plugins`) isn't installed. | Install that agent's CLI; syncthis drives plugins through it, it doesn't bundle one. |
 | Skills step says it failed or timed out | `npx skills` hit the network and was slow/unavailable. | Non-fatal — MCP sync still completed. Re-run `syncthis skills` later, or `syncthis run --no-skills` to skip it. |
 

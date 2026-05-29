@@ -30,13 +30,14 @@ usage:
   syncthis rm <server> --all [--yes] [--dry-run]
                                              remove one MCP server from every supported agent
   syncthis doctor                            MCP coverage + conflict report
-  syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]
-                                             destructive: install <primary>'s plugins on the
-                                             other plugin agents. --remove-stale also uninstalls
-                                             plugins the primary doesn't have. --provision
-                                             registers missing marketplaces via npx plugins.
-                                             (Claude ↔ Codex natively; also pushes to Cursor via
-                                             \`npx plugins --target cursor\` from a Claude primary)
+  syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]
+                                             additive: make <primary>'s plugin content reachable on
+                                             every other agent. Codex gets native plugins (missing
+                                             marketplaces are registered automatically); Cursor is
+                                             pushed via \`npx plugins --target cursor\`; the 8 non-plugin
+                                             agents get the bundled skills via \`npx skills add\`.
+                                             Anything Codex can't load as a plugin falls back to skills.
+                                             Never uninstalls. --no-provision skips network registration.
   syncthis plugin list                       list installed plugins per agent (read-only)
   syncthis help
 
@@ -61,12 +62,11 @@ flags:
   --no-skills     skip the skill update phase (sync/run only).
   --all           required for fan-out and remove-all commands.
   --yes           skip confirmation prompt for destructive commands.
-  --remove-stale  (mirror) also uninstall plugins the primary doesn't have.
-  --provision     (mirror) register a plugin's marketplace on the target via
-                  \`npx plugins add <repo> --target codex\` when it's missing,
-                  then install. A skills-only bundle Codex still can't load as a
-                  plugin is added to Codex as skills (\`npx skills add\`) instead.
-                  Shells out and hits the network.
+  --no-provision  (mirror) don't register missing Codex marketplaces or fall
+                  unloadable bundles back to skills — Codex installs only what it
+                  can already resolve. (The Cursor + non-plugin-agent skills pushes
+                  still run.) By default mirror provisions (shells out, hits the
+                  network) so a plugin's content actually reaches Codex.
 
 removing a server: use \`syncthis rm <server> --all --dry-run\`, review the diff,
 then rerun with \`--yes\`. plain union sync will re-propagate a server if it
@@ -96,8 +96,7 @@ const OPTIONS = {
   "dry-run": { type: "boolean" },
   yes: { type: "boolean", short: "y" },
   all: { type: "boolean" },
-  "remove-stale": { type: "boolean" },
-  provision: { type: "boolean" },
+  "no-provision": { type: "boolean" },
 } as const;
 
 function parse(argv: string[]) {
@@ -198,10 +197,15 @@ async function cmdMirror(argv: string[]) {
     process.exit(2);
   }
   const dryRun = !!values["dry-run"];
-  const removeStale = !!values["remove-stale"];
-  const provision = !!values.provision;
+  const provision = !values["no-provision"];
 
-  const preview = await runMirror({ from: from as AgentId, apply: false, removeStale });
+  const preview = await runMirror({ from: from as AgentId, apply: false, provision });
+  // A failed primary read yields an empty plugin set, which would otherwise look
+  // like "nothing to mirror". Refuse loudly instead of silently no-op'ing.
+  if (preview.fromRead.error) {
+    console.error(red(`mirror: can't read ${from}'s plugins: ${preview.fromRead.error}`));
+    process.exit(1);
+  }
   printMirrorPreview(preview);
   if (!mirrorHasChanges(preview)) {
     console.log(dim("nothing to do."));
@@ -211,28 +215,48 @@ async function cmdMirror(argv: string[]) {
     console.log(dim("dry-run — no changes applied."));
     return;
   }
-  if (provision) console.log(dim("--provision: will register missing marketplaces via `npx plugins add`, and add skills-only bundles to Codex as skills via `npx skills add` (network)."));
+  if (provision) {
+    console.log(
+      dim(
+        "provisioning on: missing marketplaces are registered via `npx plugins add`, and bundles a target can't load as plugins are added as skills via `npx skills add` (network). Pass --no-provision to skip.",
+      ),
+    );
+  }
   await confirmDestructive(!!values.yes);
-  const applied = await runMirror({ from: from as AgentId, apply: true, removeStale, provision });
-  printMirrorApplied(applied);
+  const applied = await runMirror({ from: from as AgentId, apply: true, provision });
+  printMirrorApplied(applied, provision);
 }
 
 function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) {
-  console.log(`Mirror plugins from ${green(r.from)} → other plugin agent(s):`);
+  console.log(`Mirror plugins from ${green(r.from)} → every other agent (additive):`);
   for (const t of r.targets) {
     // No diff → target config was unreadable. Show the reason only.
     if (!t.diff) {
       if (t.unsupportedReason) console.log(`  ${dim("·")} ${t.to.padEnd(14)} ${dim(t.unsupportedReason)}`);
       continue;
     }
-    const adds = t.diff.add.length ? `${green("+")}${t.diff.add.length}` : "";
-    const rms = t.diff.remove.length ? `${red("-")}${t.diff.remove.length}` : "";
-    const summary = [adds, rms].filter(Boolean).join(" ") || dim("unchanged");
+    const summary = t.diff.add.length ? `${green("+")}${t.diff.add.length}` : dim("unchanged");
     console.log(`  ${green("→")} ${t.to.padEnd(14)} ${summary}`);
     for (const p of t.diff.add) console.log(`      ${green("+")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
-    for (const p of t.diff.remove) console.log(`      ${red("-")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
   }
   printCursorPush(r.cursor);
+  printSkillCohortPreview(r.skillCohort);
+}
+
+function printSkillCohortPreview(s: import("../src/plugins/mirror.ts").MirrorSkillCohort) {
+  const label = "skills→agents";
+  if (!s.supported) {
+    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(s.reason ?? "unsupported")}`);
+    return;
+  }
+  const n = s.report?.sources.length ?? 0;
+  if (n === 0) {
+    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim("no skill-bearing plugins to surface")}`);
+    return;
+  }
+  console.log(
+    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${n} ${dim(`repo(s) → ${s.agents.length} non-plugin agents (npx skills; additive, already-synced skipped)`)}`,
+  );
 }
 
 function printCursorPush(c: import("../src/plugins/mirror.ts").CursorPush) {
@@ -249,23 +273,36 @@ function printCursorPush(c: import("../src/plugins/mirror.ts").CursorPush) {
   for (const repo of c.repos) console.log(`      ${green("+")} ${repo}`);
 }
 
-function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) {
+function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport, provision: boolean) {
   let installed = 0;
+  let covered = 0;
   let skipped = 0;
   let failed = 0;
+  // True only when a plugin install was skipped for lack of a resolvable
+  // marketplace (the one cause the --no-provision tip actually addresses) — not
+  // for a no-skills fallback or an unsupported cohort, which provisioning won't fix.
+  let sawUnresolvedSkip = false;
   for (const t of r.targets) {
     for (const ins of t.installs ?? []) {
       if (ins.status === "failed") {
         failed += 1;
         row("failed", t.to, ins.target, ins.message);
       } else if (ins.status === "skipped") {
-        // A skills-only bundle that fell back to `npx skills add` is reported by
-        // the skills-fallback row below — don't also print it as a bare skip.
+        // A bundle that fell back to `npx skills add` is reported by the
+        // skills-fallback row below — don't also print it as a bare skip.
         if (ins.skillsFallbackRepo) continue;
-        // Can't be mirrored to this target (no marketplace / ambiguous) — not
-        // an error. Surface the reason so it's clear why, but don't fail the run.
-        skipped += 1;
-        row("skipped", t.to, ins.target, ins.message);
+        if (ins.coveredBy) {
+          // Content is on the target as a plugin already (canonical name / sibling
+          // alias). Not a miss — surface it, but it didn't need its own install.
+          covered += 1;
+          row("synced", t.to, ins.target, ins.message ?? `covered by ${ins.coveredBy}`);
+        } else {
+          // Genuinely not mirror-able to this target (e.g. --no-provision and no
+          // resolvable marketplace, or ambiguous) — not an error.
+          skipped += 1;
+          sawUnresolvedSkip = true;
+          row("skipped", t.to, ins.target, ins.message);
+        }
       } else if (ins.status === "installed") {
         installed += 1;
         row("synced", t.to, ins.target, "installed");
@@ -277,20 +314,11 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
         row("failed", t.to, sf.repo, `skills fallback: ${sf.message ?? "failed"}`);
       } else if (sf.status === "added") {
         installed += 1;
-        row("synced", t.to, sf.repo, "added as skills (npx skills — not loadable as a plugin)");
+        row("synced", t.to, sf.repo, "added as skills (npx skills — not loadable as a plugin here)");
       } else {
-        // "skipped" — the bundle had no skills after all (a snapshot-defect plugin
-        // with no SKILL.md). Nothing to add; surface why.
+        // "skipped" — the bundle had no skills after all. Nothing to add; say why.
         skipped += 1;
         row("skipped", t.to, sf.repo, sf.message ?? "no skills in bundle");
-      }
-    }
-    for (const rm of t.removes ?? []) {
-      if (rm.status === "failed") {
-        failed += 1;
-        row("failed", t.to, rm.target, rm.message);
-      } else if (rm.status === "removed") {
-        row("synced", t.to, rm.target, "removed");
       }
     }
   }
@@ -305,16 +333,41 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
       }
     }
   } else if (r.cursor.reason) {
+    skipped += 1;
     row("skipped", "cursor", "", r.cursor.reason);
   }
+  // Skill-cohort push (the 8 non-plugin agents).
+  if (!r.skillCohort.supported) {
+    if (r.skillCohort.reason) {
+      skipped += 1;
+      row("skipped", "skills→agents", "", r.skillCohort.reason);
+    }
+  } else {
+    for (const res of r.skillCohort.report?.results ?? []) {
+      if (res.status === "failed") {
+        failed += 1;
+        row("failed", "skills→agents", res.repo, res.message);
+      } else if (res.status === "added") {
+        installed += 1;
+        row("synced", "skills→agents", res.repo, `added to ${r.skillCohort.agents.length} non-plugin agents`);
+      }
+      // "skipped" (already synced / no skills) is the common, quiet case — omit.
+    }
+  }
   const parts = [
-    installed ? green(`${installed} installed`) : "",
+    installed ? green(`${installed} added`) : "",
+    covered ? dim(`${covered} already covered`) : "",
     skipped ? dim(`${skipped} skipped`) : "",
     failed ? red(`${failed} failed`) : "",
   ].filter(Boolean);
   if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
-  if (skipped > 0) console.log(dim("tip: skipped plugins couldn't be installed natively — re-run with --provision to register their marketplaces (skills-only bundles are then added to Codex as skills)."));
-  // Only a genuine `codex plugin add` error is a failure; skips are expected.
+  // Only meaningful when the user disabled provisioning: that's the one cause
+  // "re-run without --no-provision" actually fixes. With provisioning on, a skip is
+  // ambiguity or a non-github marketplace — re-running changes nothing.
+  if (!provision && sawUnresolvedSkip) {
+    console.log(dim("tip: skipped plugins had no marketplace Codex could resolve — re-run without --no-provision to register their marketplaces and add unloadable bundles as skills."));
+  }
+  // Only genuine CLI errors count as failures; skips/covered are expected.
   if (failed > 0) process.exit(1);
 }
 

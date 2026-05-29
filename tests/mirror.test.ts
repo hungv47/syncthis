@@ -106,28 +106,25 @@ describe("runMirror — preview (no apply)", () => {
   });
 });
 
-describe("runMirror — safety: refuse dangerous --remove-stale", () => {
-  test("throws when primary's read errored and --remove-stale is set (sacred rule #1)", async () => {
-    // No claude CLI on PATH → fromRead.error fires.
-    // With --remove-stale, fromIdx would be empty; without the guard, every
-    // plugin in every target gets queued for deletion. Refuse instead.
-    await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
-    expect(runMirror({ from: "claude-code", apply: false, removeStale: true })).rejects.toThrow(/refusing --remove-stale/);
-  });
-
-  test("throws when primary reports zero plugins and --remove-stale is set", async () => {
+describe("runMirror — additive only (no uninstall path)", () => {
+  test("empty primary schedules no installs, and the diff has no `remove`", async () => {
     await installFakeCli("claude", JSON.stringify([]));
     await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
-    expect(runMirror({ from: "claude-code", apply: false, removeStale: true })).rejects.toThrow(/zero plugins/);
-  });
-
-  test("allows empty-primary mirror WITHOUT --remove-stale (no deletions to schedule)", async () => {
-    await installFakeCli("claude", JSON.stringify([]));
-    await installFakeCli("codex", codexInstalled("existing@plugins-cli"));
-    const report = await runMirror({ from: "claude-code", apply: false, removeStale: false });
+    const report = await runMirror({ from: "claude-code", apply: false });
     const codex = report.targets.find((t) => t.to === "codex")!;
     expect(codex.diff!.add).toEqual([]);
-    expect(codex.diff!.remove).toEqual([]);
+    // MirrorDiff has no `remove` field — a mirror can only add, never uninstall.
+    expect("remove" in codex.diff!).toBe(false);
+    expect(mirrorHasChanges(report)).toBe(false);
+  });
+
+  test("a plugin only the target has is left untouched (never queued for removal)", async () => {
+    await installFakeCli("claude", JSON.stringify([{ id: "keep@mkt", enabled: true }]));
+    await installFakeCli("codex", codexInstalled("keep@plugins-cli", "extra@plugins-cli"));
+    const report = await runMirror({ from: "claude-code", apply: false });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    expect(codex.diff!.add).toEqual([]); // keep already present; extra left alone
+    expect(mirrorHasChanges(report)).toBe(false);
   });
 });
 
@@ -148,16 +145,6 @@ describe("runMirror — apply", () => {
     expect(codex.installs!.length).toBe(2);
     const invocations = await readInvocations();
     expect(invocations.filter((l) => l.startsWith("codex plugin add")).length).toBe(2);
-  });
-
-  test("--remove-stale removes plugins not in primary", async () => {
-    // Primary must be non-empty to pass the safety guard (see refuse-tests above).
-    await installFakeCli("claude", JSON.stringify([{ id: "keep@mkt", enabled: true }]));
-    await installFakeCli("codex", codexInstalled("keep@plugins-cli", "stale@plugins-cli"));
-    const report = await runMirror({ from: "claude-code", apply: false, removeStale: true });
-    const codex = report.targets.find((t) => t.to === "codex")!;
-    expect(codex.diff!.remove.map((p) => p.name)).toEqual(["stale"]);
-    expect(codex.diff!.add).toEqual([]);
   });
 });
 
