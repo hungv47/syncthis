@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+
 export type ShellResult = {
   ok: boolean;
   exitCode: number;
@@ -5,42 +7,72 @@ export type ShellResult = {
   stderr: string;
   cmd: string;
   notFound: boolean;
+  // true when the command was killed by the timeout — lets callers report
+  // "timed out after Ns" instead of a confusing generic non-zero/-1 exit.
+  timedOut: boolean;
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-export async function run(cmd: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<ShellResult> {
+// Run a subprocess with no shell (args are passed array-style, so a value can
+// never be re-interpreted as a flag or shell metacharacter) on plain Node's
+// child_process, so the bundled CLI runs under Node without Bun.
+export function run(cmd: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<ShellResult> {
   const display = [cmd, ...args].join(" ");
-  try {
-    const proc = Bun.spawn([cmd, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     });
-    const timeout = setTimeout(() => {
-      try {
-        proc.kill();
-      } catch {}
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
     }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    clearTimeout(timeout);
-    return {
-      ok: exitCode === 0,
-      exitCode,
-      stdout,
-      stderr,
-      cmd: display,
-      notFound: false,
+
+    const finish = (r: ShellResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
     };
-  } catch (err) {
-    const message = (err as { message?: string })?.message ?? String(err);
-    const notFound = /ENOENT|not found|No such file/i.test(message);
-    return { ok: false, exitCode: -1, stdout: "", stderr: message, cmd: display, notFound };
-  }
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => (stdout += d));
+    child.stderr?.on("data", (d: string) => (stderr += d));
+
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      const message = err?.message ?? String(err);
+      finish({
+        ok: false,
+        exitCode: -1,
+        stdout,
+        stderr: stderr || message,
+        cmd: display,
+        notFound: err?.code === "ENOENT" || /ENOENT|not found|No such file/i.test(message),
+        timedOut,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      const exitCode = code ?? -1;
+      finish({
+        ok: exitCode === 0 && !timedOut,
+        exitCode,
+        stdout,
+        stderr: timedOut && !stderr ? `killed after timeout (${signal ?? "SIGTERM"})` : stderr,
+        cmd: display,
+        notFound: false,
+        timedOut,
+      });
+    });
+  });
 }
 
 // Split a plugin id of the form "<name>@<marketplace>" into its parts. A leading

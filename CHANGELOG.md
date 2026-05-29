@@ -2,6 +2,26 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.7.0] — 2026-05-29
+
+Pre-launch hardening: runs on Node without Bun, idempotent for every transport, crash-safe writes.
+
+### Fixed
+- **SSE/streamable-http servers now converge.** Agents that can't store a transport subtype (Hermes, Windsurf, Copilot, OpenCode) read a URL server back as `http`, so a second `sync` saw `sse`-vs-`http` for the same name and raised a permanent conflict the user could never resolve. Transport subtype is now excluded from the conflict identity (the URL is the identity), so sync stays at zero conflicts across repeated runs while transport-capable agents keep their original `type`.
+- **Config writes are atomic.** Writes go to a sibling temp file clamped to `0600` and are `rename`d over the target, so a crash / `ENOSPC` mid-write can no longer truncate an agent's config into an empty `{}`. This also fixes a permission bug where a pre-existing `0400` file became unwritable and bricked the next sync.
+- `readLine()` no longer hangs forever on EOF-without-newline (Ctrl-D / closed pipe) at a destructive confirmation prompt — EOF now aborts safely.
+- A malformed `~/.claude/plugins/known_marketplaces.json` no longer crashes the whole `sync`; the skills pass treats it as "no sources" and continues.
+- Windsurf adapter preserves unknown per-server fields on rewrite (matching the other adapters' previous-merge), so a re-sync no longer drops Windsurf-specific keys.
+- A bad CLI flag now exits `2` (usage error) instead of `1`, matching every other usage-error path.
+
+### Changed
+- **Runs on Node ≥18 — no Bun required.** The CLI is bundled with `bun build --target=node` into a single self-contained `dist/syncthis.mjs` (Node shebang). `npx @hungv47/syncthis run` now works for Node-only users; the prior `.mjs` shim that hard-spawned `bun` (exit 127 without it) is gone. Bun is still the dev runtime.
+- Subprocess and file I/O moved from `Bun.*` APIs to `node:child_process` / `node:fs` so the bundle is portable.
+- Timed-out shell-outs report `timed out after Ns` instead of a confusing negative/`-15` exit; the Codex `--provision` re-read failure is now reported as a failure with its cause, not a benign skip.
+
+### Removed
+- Dropped `react-devtools-core` (a 15 MB dependency that was never imported at runtime) and moved all runtime deps to `devDependencies` — they're bundled in. The published tarball is now 4 files (~470 KB) and installs zero transitive deps.
+
 ## [0.6.0] — 2026-05-28
 
 Make the Claude → Codex plugin mirror actually install everything it can, and be honest about what it can't.

@@ -175,7 +175,18 @@ export const codexPluginAdapter: PluginAdapter = {
         }
         provisioned = true;
         const reRead = await run("codex", ["plugin", "list"]);
-        if (reRead.ok) candidates = marketplacesFor(parseCodexListRows(reRead.stdout || ""), name);
+        if (reRead.ok) {
+          candidates = marketplacesFor(parseCodexListRows(reRead.stdout || ""), name);
+        } else {
+          // Provision succeeded but we can't verify the result — don't pretend it's
+          // a benign "nothing to install" skip; report it as a failure with the cause.
+          return {
+            agent: "codex",
+            target: name,
+            status: "failed",
+            message: `provisioned, but verify failed (codex plugin list): ${reRead.stderr.trim() || `exit ${reRead.exitCode}`}`,
+          };
+        }
       }
 
       if (candidates.length === 1) {

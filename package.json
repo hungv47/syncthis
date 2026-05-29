@@ -1,7 +1,7 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.6.0",
-  "description": "Sync MCP servers across 11 AI coding agents — Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes. Mirror plugins Claude ↔ Codex. Skills delegated to npx skills. Run with `npx @hungv47/syncthis run`.",
+  "version": "0.7.0",
+  "description": "Sync MCP servers across 11 AI coding agents — Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes. Mirror plugins (Claude ↔ Codex + Cursor). Skills delegated to npx skills. Runs on Node — `npx @hungv47/syncthis run`.",
   "type": "module",
   "license": "MIT",
   "author": "Le Vinh Hung <levinhhungg@gmail.com>",
@@ -33,44 +33,42 @@
     "ai-tools",
     "cli",
     "config-sync",
-    "skills"
+    "skills",
+    "plugins"
   ],
   "bin": {
-    "syncthis": "bin/syncthis.mjs"
+    "syncthis": "dist/syncthis.mjs"
   },
   "files": [
-    "bin",
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
   "engines": {
+    "node": ">=18",
     "bun": ">=1.0.0"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "build": "bun build ./bin/syncthis.ts --compile --outfile dist/syncthis",
-    "prepublishOnly": "bun test && bunx tsc --noEmit"
+    "build": "bun scripts/build.ts",
+    "prepublishOnly": "bun test && bunx tsc --noEmit && bun scripts/build.ts"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
+  "devDependencies": {
     "@clack/prompts": "^0.7.0",
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^19.2.14",
     "ink": "^7.0.2",
     "ink-big-text": "^2.0.0",
     "ink-gradient": "^4.0.0",
     "js-yaml": "^4.1.0",
     "json5": "^2.2.3",
     "react": "^19.2.6",
-    "react-devtools-core": "^7.0.1",
     "smol-toml": "^1.3.1"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/js-yaml": "^4.0.9",
-    "@types/react": "^19.2.14"
   },
   "peerDependencies": {
     "typescript": "^5"

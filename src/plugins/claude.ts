@@ -64,17 +64,17 @@ export const claudePluginAdapter: PluginAdapter = {
   // marketplace name → "owner/repo" for Claude's registered github marketplaces.
   // Lets the mirror tell a target (Codex) where to provision a plugin whose
   // marketplace it lacks. Local/non-github sources are omitted (no repo to add).
-  async marketplaceSources(): Promise<Map<string, string>> {
+  async marketplaceSources(): Promise<Map<string, string> | null> {
     const map = new Map<string, string>();
     const res = await run("claude", ["plugin", "marketplace", "list", "--json"]);
-    if (!res.ok) return map;
+    if (!res.ok) return null;
     let raw: unknown;
     try {
       raw = JSON.parse(res.stdout || "[]");
     } catch {
-      return map;
+      return null;
     }
-    if (!Array.isArray(raw)) return map;
+    if (!Array.isArray(raw)) return null;
     for (const m of raw as Array<{ name?: string; source?: string; repo?: string }>) {
       if (m.name && m.source === "github" && m.repo) map.set(m.name, m.repo);
     }

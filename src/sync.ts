@@ -1,5 +1,6 @@
-import { spawn } from "bun";
+import { spawn } from "node:child_process";
 import { adapters } from "./adapters/index.ts";
+import { addSkillsFromPlugins, skillCohort, type PluginSkillsReport } from "./skills.ts";
 import type { Adapter, AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
 
 const SKILLS_UPDATE_TIMEOUT_MS = 120_000;
@@ -7,6 +8,7 @@ const SKILLS_UPDATE_TIMEOUT_MS = 120_000;
 type SyncOptions = {
   dryRun?: boolean;
   skipSkills?: boolean;
+  onPluginSkillProgress?: (repo: string, i: number, total: number) => void;
 };
 
 export type DirectionalDiff = {
@@ -55,23 +57,36 @@ export type SyncReport = {
   union: Record<string, McpServer>;
   conflicts: Conflict[];
   writes: AdapterWriteResult[];
+  pluginSkills?: PluginSkillsReport;
   skills?: { ran: boolean; ok: boolean; message?: string };
 };
 
 function canonical(s: McpServer): string {
-  return JSON.stringify(sortKeys(normalizeServer(s)));
+  return JSON.stringify(sortKeys(canonicalShape(s)));
 }
 
-// Adapters differ in how they preserve empty containers — OpenCode drops `args: []` on round-trip
-// while canonical-schema adapters keep it. Normalize both shapes to the same canonical form so the
-// conflict detector doesn't fire on cosmetic differences.
-function normalizeServer(s: McpServer): McpServer {
+// Canonical identity used for conflict/equality detection (computeUnion + diffServers).
+//
+// Two things are deliberately collapsed so the detector doesn't fire on differences
+// that aren't real:
+//   1. Empty containers — adapters disagree on round-tripping `args: []`/`env: {}`
+//      (OpenCode drops them, canonical-schema adapters keep them). Omit when empty.
+//   2. URL transport subtype (http / sse / streamable-http). Several agents
+//      (windsurf, copilot, hermes, opencode) have no field for it and ALWAYS read a
+//      URL server back as "http". If transport were part of the identity, the first
+//      sync would write an sse server to those agents, they'd report it back as http,
+//      and the SECOND sync would see sse-vs-http for the same name and raise a
+//      conflict the user can never resolve (re-running just recreates it). The URL is
+//      the server's identity; transport is not faithfully syncable, so it's excluded.
+//      The propagated union value still keeps its original `type` (see computeUnion),
+//      so transport-capable agents retain whatever the source agent had.
+function canonicalShape(s: McpServer): Record<string, unknown> {
   if ("url" in s) {
-    const out: Extract<McpServer, { url: string }> = { type: s.type ?? "http", url: s.url };
+    const out: Record<string, unknown> = { kind: "url", url: s.url };
     if (s.headers && Object.keys(s.headers).length > 0) out.headers = s.headers;
     return out;
   }
-  const out: Extract<McpServer, { command: string }> = { type: s.type ?? "stdio", command: s.command };
+  const out: Record<string, unknown> = { kind: "stdio", command: s.command };
   if (s.args && s.args.length > 0) out.args = s.args;
   if (s.env && Object.keys(s.env).length > 0) out.env = s.env;
   if (s.cwd) out.cwd = s.cwd;
@@ -144,10 +159,17 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
 
   const report: SyncReport = { reads, union, conflicts, writes };
 
-  const skipReason = opts.skipSkills ? "skipped (--no-skills)" : dryRun ? "skipped (dry-run)" : null;
-  report.skills = skipReason
-    ? { ran: false, ok: true, message: skipReason }
-    : await runSkillsUpdate();
+  if (opts.skipSkills) {
+    report.pluginSkills = { ran: false, dryRun, agents: skillCohort(), sources: [], results: [], message: "skipped (--no-skills)" };
+    report.skills = { ran: false, ok: true, message: "skipped (--no-skills)" };
+    return report;
+  }
+
+  // Surface plugin-bundled skills to the non-plugin agents BEFORE refreshing, so
+  // a freshly added skill is picked up by the same run. On dry-run this only
+  // resolves + reports the source repos (no `npx skills add` invoked).
+  report.pluginSkills = await addSkillsFromPlugins({ dryRun, onProgress: opts.onPluginSkillProgress });
+  report.skills = dryRun ? { ran: false, ok: true, message: "skipped (dry-run)" } : await runSkillsUpdate();
 
   return report;
 }
@@ -273,27 +295,32 @@ export async function runSkillsOnly(): Promise<NonNullable<SyncReport["skills"]>
   return runSkillsUpdate();
 }
 
-async function runSkillsUpdate(): Promise<NonNullable<SyncReport["skills"]>> {
-  let timeout: Timer | undefined;
-  try {
-    const controller = new AbortController();
-    timeout = setTimeout(() => controller.abort(), SKILLS_UPDATE_TIMEOUT_MS);
-    const proc = spawn(["npx", "-y", "skills", "update", "-y"], {
-      stdout: "inherit",
-      stderr: "pipe",
-      stdin: "ignore",
-      signal: controller.signal,
+function runSkillsUpdate(): Promise<NonNullable<SyncReport["skills"]>> {
+  return new Promise((resolve) => {
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    // stdout is inherited so the user sees skills' own progress; stderr is captured
+    // so a failure tail can be surfaced.
+    const child = spawn("npx", ["-y", "skills", "update", "-y"], { stdio: ["ignore", "inherit", "pipe"] });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, SKILLS_UPDATE_TIMEOUT_MS);
+    // 'error' (spawn failure) and 'close' can both fire — settle exactly once.
+    const finish = (r: NonNullable<SyncReport["skills"]>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (d: string) => (stderr += d));
+    child.on("error", (err: Error) => finish({ ran: true, ok: false, message: `npx skills failed: ${err.message}` }));
+    child.on("close", (code) => {
+      if (timedOut) return finish({ ran: true, ok: false, message: `npx skills timed out after ${SKILLS_UPDATE_TIMEOUT_MS / 1000}s` });
+      if (code === 0) return finish({ ran: true, ok: true });
+      finish({ ran: true, ok: false, message: `npx skills exited ${code}: ${stderr.trim().split("\n").pop() ?? ""}` });
     });
-    const code = await proc.exited;
-    if (timeout) clearTimeout(timeout);
-    if (code === 0) return { ran: true, ok: true };
-    const err = await new Response(proc.stderr).text();
-    return { ran: true, ok: false, message: `npx skills exited ${code}: ${err.trim().split("\n").pop() ?? ""}` };
-  } catch (err) {
-    if (timeout) clearTimeout(timeout);
-    if ((err as { name?: string }).name === "AbortError") {
-      return { ran: true, ok: false, message: `npx skills timed out after ${SKILLS_UPDATE_TIMEOUT_MS / 1000}s` };
-    }
-    return { ran: true, ok: false, message: `npx skills failed: ${String(err)}` };
-  }
+  });
 }

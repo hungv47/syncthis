@@ -65,7 +65,9 @@ export interface PluginAdapter {
   // marketplaces. The mirror uses the primary's map to tell a target where to
   // provision a plugin whose marketplace it lacks. Only agents that can report
   // marketplace sources implement it (currently Claude).
-  marketplaceSources?(): Promise<Map<string, string>>;
+  // Returns null when the lookup failed (so callers can distinguish "couldn't read"
+  // from "read fine, no github marketplaces" — an empty map).
+  marketplaceSources?(): Promise<Map<string, string> | null>;
   // Mirror layer. installPlugin pushes primary's plugins onto a target;
   // removePlugin backs the `--remove-stale` path. Both are required: only agents
   // with a native install CLI are in the cohort, so every member can do both.

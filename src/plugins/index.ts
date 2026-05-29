@@ -2,10 +2,12 @@ import { claudePluginAdapter } from "./claude.ts";
 import { codexPluginAdapter } from "./codex.ts";
 import type { PluginAdapter, PluginAdapterRead } from "./types.ts";
 
-// Plugin cohort: only agents that expose a native bundle-plugin install CLI can
-// participate in mirror. Claude (`claude plugin install`) and Codex (`codex
-// plugin add`). Cursor has no install CLI; OpenCode plugins are npm modules in a
-// different cohort — neither can be a mirror target, so they're out of scope.
+// Plugin adapters: agents with a native bundle-plugin CLI that can be both read
+// (plugin list) and written (install/remove) — Claude (`claude plugin install`)
+// and Codex (`codex plugin add`). Cursor is also a plugin target but write-only
+// (no list CLI), so it's handled separately in the mirror via `npx plugins add
+// --target cursor` rather than as an adapter here. OpenCode plugins are npm
+// modules in a different cohort entirely — out of scope.
 export const pluginAdapters: PluginAdapter[] = [claudePluginAdapter, codexPluginAdapter];
 
 export async function listPlugins(): Promise<PluginAdapterRead[]> {

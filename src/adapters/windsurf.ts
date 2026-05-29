@@ -36,17 +36,31 @@ function fromWindsurf(raw: WindsurfShape["mcpServers"]): Record<string, McpServe
   return out;
 }
 
-function toWindsurf(servers: Record<string, McpServer>): Record<string, WindsurfStdio | WindsurfHttp> {
+function toWindsurf(
+  servers: Record<string, McpServer>,
+  previous: WindsurfShape["mcpServers"] = {},
+): Record<string, WindsurfStdio | WindsurfHttp> {
   const out: Record<string, WindsurfStdio | WindsurfHttp> = {};
   for (const [name, s] of Object.entries(servers)) {
     if ("url" in s) {
-      const entry: WindsurfHttp = { serverUrl: s.url };
+      const prior = previous?.[name];
+      const entry: WindsurfHttp = {
+        ...(prior && "serverUrl" in prior ? prior : {}),
+        serverUrl: s.url,
+      };
       if (s.headers) entry.headers = s.headers;
+      else delete entry.headers;
       out[name] = entry;
     } else {
-      const entry: WindsurfStdio = { command: s.command };
+      const prior = previous?.[name];
+      const entry: WindsurfStdio = {
+        ...(prior && "command" in prior ? prior : {}),
+        command: s.command,
+      };
       if (s.args) entry.args = s.args;
+      else delete entry.args;
       if (s.env) entry.env = s.env;
+      else delete entry.env;
       out[name] = entry;
     }
   }
@@ -57,5 +71,5 @@ export const windsurfAdapter = createJsonAdapter<WindsurfShape>({
   id: "windsurf",
   path: TARGET,
   readServers: (data) => fromWindsurf(data.mcpServers),
-  writeServers: (data, servers) => ({ ...data, mcpServers: toWindsurf(servers) }),
+  writeServers: (data, servers) => ({ ...data, mcpServers: toWindsurf(servers, data.mcpServers) }),
 });

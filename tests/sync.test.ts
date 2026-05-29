@@ -84,6 +84,24 @@ describe("computeUnion", () => {
     expect(conflicts[0]!.versions.map((v) => v.agent).sort()).toEqual(["claude-code", "cursor"]);
   });
 
+  test("treats same-url sse/http as one server (transport not part of identity)", () => {
+    const sse: McpServer = { type: "sse", url: "https://x.test/mcp" };
+    const http: McpServer = { type: "http", url: "https://x.test/mcp" };
+    const reads = [
+      { agent: "cursor" as const, path: "", exists: true, servers: { s: sse } as Record<string, McpServer> },
+      { agent: "hermes-agent" as const, path: "", exists: true, servers: { s: http } as Record<string, McpServer> },
+    ];
+    const { union, conflicts } = computeUnion(reads);
+    expect(conflicts).toEqual([]);
+    expect(Object.keys(union)).toEqual(["s"]);
+    // But a genuinely different URL is still a conflict.
+    const reads2 = [
+      { agent: "cursor" as const, path: "", exists: true, servers: { s: sse } as Record<string, McpServer> },
+      { agent: "hermes-agent" as const, path: "", exists: true, servers: { s: { type: "http", url: "https://y.test/mcp" } as McpServer } },
+    ];
+    expect(computeUnion(reads2).conflicts).toHaveLength(1);
+  });
+
   test("treats key-order differences as same config (canonicalized)", () => {
     const a: McpServer = { type: "stdio", command: "x", args: ["1"] };
     const b: McpServer = { args: ["1"], command: "x", type: "stdio" };
@@ -308,10 +326,29 @@ describe("runSync (cross-pollinate)", () => {
     await writeAgentJson(".claude.json", { stream: sse });
     await runSync({ skipSkills: true });
     // Codex's TOML adapter explicitly preserves the sse type field on round-trip.
-    // Agents that can't represent sse (windsurf, copilot, hermes) will downcast to http,
-    // which is expected — the conflict policy handles that gracefully.
+    // Agents that can't represent sse (windsurf, copilot, hermes, opencode) downcast it
+    // to http — that's why URL transport is excluded from the canonical conflict identity
+    // (see canonicalShape in sync.ts), so a downcast never manufactures a conflict.
     const codexRead = await codexAdapter.read();
     expect(codexRead.servers.stream).toMatchObject({ type: "sse", url: "https://example.com/sse" });
+  });
+
+  test("sse server converges — no self-inflicted conflict on repeat sync", async () => {
+    // Regression: agents that can't store transport (windsurf/copilot/hermes/opencode)
+    // read an sse URL back as http. If transport were part of the conflict identity, the
+    // 2nd sync would see sse-vs-http for the same name and raise a conflict the user can
+    // never resolve. Transport is excluded from the identity, so sync must stay at zero
+    // conflicts across repeated runs.
+    await writeAgentJson(".cursor/mcp.json", { stream: { type: "sse", url: "https://example.com/sse" } });
+    const r1 = await runSync({ skipSkills: true });
+    expect(r1.conflicts).toEqual([]);
+    const r2 = await runSync({ skipSkills: true });
+    expect(r2.conflicts).toEqual([]);
+    const r3 = await runSync({ skipSkills: true });
+    expect(r3.conflicts).toEqual([]);
+    // And the URL still propagated everywhere.
+    const hermes = await adapters.find((a) => a.id === "hermes-agent")!.read();
+    expect(hermes.servers.stream).toMatchObject({ url: "https://example.com/sse" });
   });
 
   test("corrupt file in one agent doesn't kill whole sync", async () => {

@@ -129,6 +129,26 @@ describe("windsurf adapter", () => {
   test("http round-trip preserves canonical url shape", async () => {
     expect(await roundTrip(windsurfAdapter, HTTP, "lin")).toEqual(HTTP);
   });
+  test("preserves Windsurf-specific fields on existing servers", async () => {
+    const path = windsurfAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(
+      path,
+      JSON.stringify({
+        mcpServers: {
+          gh: { command: "old", disabled: true },
+          lin: { serverUrl: "https://old.example", disabled: false },
+        },
+      }),
+    );
+    await windsurfAdapter.write({ gh: STDIO, lin: HTTP }, { dryRun: false });
+    const data = JSON.parse(await Bun.file(path).text());
+    // unknown per-server fields survive the rewrite (previous-merge), values updated
+    expect(data.mcpServers.gh.disabled).toBe(true);
+    expect(data.mcpServers.gh.command).toBe(STDIO.command);
+    expect(data.mcpServers.lin.disabled).toBe(false);
+    expect(data.mcpServers.lin.serverUrl).toBe(HTTP.url);
+  });
 });
 
 describe("opencode adapter", () => {

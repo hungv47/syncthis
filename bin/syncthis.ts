@@ -11,8 +11,10 @@ const HELP = `syncthis — keep your AI tools in sync
 
   it does three things:
     • MCP servers — union sync across all 11 agents (the unique core)
-    • plugins     — mirror one agent's plugins onto another (Claude ↔ Codex)
-    • skills      — delegated to \`npx skills update -y\` (vercel-labs/skills)
+    • plugins     — mirror one agent's plugins onto the other plugin agents
+                    (Claude ↔ Codex natively; Cursor via \`npx plugins\`)
+    • skills      — \`npx skills update -y\`, plus surfacing plugin-bundled skills
+                    to the 8 non-plugin agents (vercel-labs/skills)
 
 usage:
   syncthis                         interactive picker (or HELP if non-TTY)
@@ -20,6 +22,8 @@ usage:
   syncthis run  [--dry-run] [--no-skills]    alias for sync
   syncthis mcp  [--dry-run]                  MCP only — skip skills update
   syncthis skills                            skills only — \`npx skills update -y\`
+  syncthis skills from-plugins [--dry-run]   add skills bundled in Claude plugins to the 8
+                                             non-plugin agents (opencode, gemini-cli, windsurf, …)
   syncthis <from> <to> [--yes] [--dry-run]   one-way mirror MCP from one agent to another
   syncthis from <agent> --all [--yes] [--dry-run]
                                              one-way mirror MCP from one agent to every other agent
@@ -28,10 +32,11 @@ usage:
   syncthis doctor                            MCP coverage + conflict report
   syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]
                                              destructive: install <primary>'s plugins on the
-                                             other plugin agent. --remove-stale also uninstalls
+                                             other plugin agents. --remove-stale also uninstalls
                                              plugins the primary doesn't have. --provision
                                              registers missing marketplaces via npx plugins.
-                                             (Claude ↔ Codex)
+                                             (Claude ↔ Codex natively; also pushes to Cursor via
+                                             \`npx plugins --target cursor\` from a Claude primary)
   syncthis plugin list                       list installed plugins per agent (read-only)
   syncthis help
 
@@ -41,13 +46,15 @@ what sync does:
   2. computes the union (servers in any agent → propagated to every agent).
   3. for any name with conflicting configs across agents, leaves each agent's
      own version untouched and reports the conflict — you resolve manually.
-  4. runs \`npx skills update -y\` to refresh skills (delegated to vercel-labs/skills,
-     which supports 55 agents).
+  4. surfaces skills bundled inside your Claude plugins to the 8 non-plugin agents
+     (\`npx skills add\`), since those agents can't read plugins, then runs
+     \`npx skills update -y\` to refresh everything (delegated to vercel-labs/skills).
 
 agents supported (use these IDs with the directional command):
   claude-code, cursor, codex, gemini-cli, kimi-cli, antigravity,
   github-copilot, windsurf, opencode, openclaw, hermes-agent
-  plugin mirror covers the two with a native install CLI: claude-code, codex.
+  plugin cohort (get the full bundle): claude-code, codex (native CLI), cursor
+  (write-only via npx plugins). the other 8 get the skill subset via npx skills.
 
 flags:
   --dry-run       report what would change without writing.
@@ -95,17 +102,40 @@ function parse(argv: string[]) {
   return parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
 }
 
+function pluginSkillProgress(repo: string, i: number, total: number) {
+  process.stderr.write(dim(`  → [${i}/${total}] npx skills add ${repo}\n`));
+}
+
 async function cmdSync(argv: string[]) {
   const { runSync } = await import("../src/sync.ts");
   const { values } = parse(argv);
   const dryRun = !!values["dry-run"];
-  printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"] }));
+  printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"], onPluginSkillProgress: pluginSkillProgress }));
 }
 
 async function cmdMcp(argv: string[]) {
   const { runSync } = await import("../src/sync.ts");
   const { values } = parse(argv);
   printSync(await runSync({ dryRun: !!values["dry-run"], skipSkills: true }));
+}
+
+async function cmdSkills(argv: string[]) {
+  const sub = argv[0];
+  if (sub === "from-plugins") return cmdSkillsFromPlugins(argv.slice(1));
+  if (sub === "help" || sub === "-h" || sub === "--help") {
+    console.log(
+      "syncthis skills              — npx skills update -y (refresh every installed skill)\n" +
+        "syncthis skills from-plugins — add skills bundled in Claude plugins to the non-plugin agents\n" +
+        "                               (gemini-cli, kimi-cli, antigravity, github-copilot, windsurf,\n" +
+        "                                opencode, openclaw, hermes-agent). [--dry-run]",
+    );
+    return;
+  }
+  if (sub && !sub.startsWith("-")) {
+    console.error(red(`unknown skills subcommand: ${sub}. use \`skills\` or \`skills from-plugins\`.`));
+    process.exit(2);
+  }
+  return cmdSkillsOnly();
 }
 
 async function cmdSkillsOnly() {
@@ -115,6 +145,36 @@ async function cmdSkillsOnly() {
   else {
     row("drift", "skills", "", r.message ?? "failed");
     process.exit(1);
+  }
+}
+
+async function cmdSkillsFromPlugins(argv: string[]) {
+  const { addSkillsFromPlugins } = await import("../src/skills.ts");
+  const { values } = parse(argv);
+  const dryRun = !!values["dry-run"];
+  const report = await addSkillsFromPlugins({ dryRun, onProgress: pluginSkillProgress });
+  printPluginSkills(report, dryRun);
+  if (report.results.some((r) => r.status === "failed")) process.exit(1);
+}
+
+function printPluginSkills(r: import("../src/skills.ts").PluginSkillsReport, dryRun: boolean) {
+  if (!r.ran) {
+    row("skipped", "plugin-skills", "", r.message);
+    return;
+  }
+  let added = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const res of r.results) {
+    if (res.status === "added") added += 1;
+    else if (res.status === "skipped") skipped += 1;
+    else failed += 1;
+  }
+  const verb = dryRun ? "would add" : "added";
+  const detail = `${verb} ${added}${skipped ? `, ${skipped} skipped` : ""}${failed ? `, ${failed} failed` : ""}`;
+  row(failed ? "drift" : "synced", "plugin-skills", `${r.sources.length} repo(s) → ${r.agents.length} agent(s)`, detail);
+  for (const res of r.results) {
+    if (res.status === "failed") console.log(`      ${red("✗")} ${res.repo} ${dim(res.message ?? "")}`);
   }
 }
 
@@ -170,6 +230,21 @@ function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) 
     for (const p of t.diff.add) console.log(`      ${green("+")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
     for (const p of t.diff.remove) console.log(`      ${red("-")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
   }
+  printCursorPush(r.cursor);
+}
+
+function printCursorPush(c: import("../src/plugins/mirror.ts").CursorPush) {
+  if (!c.supported) {
+    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim(c.reason ?? "unsupported")}`);
+    return;
+  }
+  if (c.repos.length === 0) {
+    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim("no github-backed plugins to push")}`);
+    return;
+  }
+  // Cursor state isn't readable, so this is an additive push of every repo.
+  console.log(`  ${green("→")} ${"cursor".padEnd(14)} ${green("+")}${c.repos.length} ${dim("(via npx plugins; additive — cursor state not readable)")}`);
+  for (const repo of c.repos) console.log(`      ${green("+")} ${repo}`);
 }
 
 function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) {
@@ -199,6 +274,19 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
         row("synced", t.to, rm.target, "removed");
       }
     }
+  }
+  if (r.cursor.supported) {
+    for (const res of r.cursor.results) {
+      if (res.status === "failed") {
+        failed += 1;
+        row("failed", "cursor", res.repo, res.message);
+      } else {
+        installed += 1;
+        row("synced", "cursor", res.repo, "installed (npx plugins)");
+      }
+    }
+  } else if (r.cursor.reason) {
+    row("skipped", "cursor", "", r.cursor.reason);
   }
   const parts = [
     installed ? green(`${installed} installed`) : "",
@@ -412,18 +500,25 @@ async function confirmDestructive(yes: boolean) {
 function readLine(): Promise<string> {
   return new Promise((resolve) => {
     let buf = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.resume();
+    const finish = (line: string) => {
+      process.stdin.removeListener("data", onData);
+      process.stdin.removeListener("end", onEnd);
+      process.stdin.pause();
+      resolve(line);
+    };
     const onData = (chunk: string) => {
       buf += chunk;
       const nl = buf.indexOf("\n");
-      if (nl >= 0) {
-        process.stdin.removeListener("data", onData);
-        process.stdin.pause();
-        resolve(buf.slice(0, nl));
-      }
+      if (nl >= 0) finish(buf.slice(0, nl));
     };
+    // EOF without a trailing newline (Ctrl-D, or a closed/empty pipe) must resolve —
+    // otherwise the destructive-confirm prompt hangs forever. Resolve with whatever
+    // was typed; confirmDestructive treats anything but "y" as abort, so EOF = abort.
+    const onEnd = () => finish(buf);
+    process.stdin.setEncoding("utf8");
+    process.stdin.resume();
     process.stdin.on("data", onData);
+    process.stdin.on("end", onEnd);
   });
 }
 
@@ -452,6 +547,8 @@ function printSync(r: import("../src/sync.ts").SyncReport) {
     }
     console.log(dim(`  resolve by deleting the version you don't want, then re-run sync.`));
   }
+
+  if (r.pluginSkills) printPluginSkills(r.pluginSkills, r.pluginSkills.dryRun);
 
   if (r.skills) {
     if (!r.skills.ran) row("skipped", "skills", "", r.skills.message);
@@ -543,7 +640,7 @@ async function main() {
   if (cmd === "sync") return cmdSync(rest);
   if (cmd === "run") return cmdSync(rest);
   if (cmd === "mcp") return cmdMcp(rest);
-  if (cmd === "skills") return cmdSkillsOnly();
+  if (cmd === "skills") return cmdSkills(rest);
   if (cmd === "doctor") return cmdDoctor();
   if (cmd === "mirror") return cmdMirror(rest);
   if (cmd === "from") return cmdFanOut(rest);
@@ -565,5 +662,9 @@ async function main() {
 
 main().catch((err) => {
   console.error(red(`syncthis: ${err?.message ?? err}`));
-  process.exit(1);
+  // A bad flag / arg is a usage error → exit 2, matching every other usage-error
+  // path (unknown command, missing --all, etc.). Everything else is a runtime
+  // failure → exit 1.
+  const code = typeof err?.code === "string" && err.code.startsWith("ERR_PARSE_ARGS") ? 2 : 1;
+  process.exit(code);
 });

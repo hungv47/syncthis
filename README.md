@@ -10,13 +10,17 @@
 
 **One CLI to keep MCP servers in sync across your AI coding agents — plus a plugin mirror and skills delegation.**
 
+Every coding agent stores its MCP servers in its own file, its own format, its own path. Add a server to Claude Code and the other ten don't know it exists — so you wire up the same server, by hand, again and again. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.** Nothing else does cross-agent MCP sync — that's why it exists.
+
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
 - **MCP servers** — union sync across all 11 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
-- **Plugins** — `mirror` one agent's installed plugins onto another. Limited to the two agents with a native install CLI: **Claude Code ↔ Codex**.
+- **Plugins** — `mirror` one agent's installed plugins onto the others. **Claude Code ↔ Codex** sync natively (each has a read+write plugin CLI); **Cursor** is a write-only target, pushed by source repo via `npx plugins add --target cursor` from a Claude primary.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
 Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total.
+
+> Union sync writes the merged set to **every** supported agent — including ones you haven't installed yet — so your servers are already in place the moment you start using a new agent. It's additive and reversible by design (see [Safe by design](#safe-by-design)); `--dry-run` previews any command.
 
 ## Quick start
 
@@ -27,6 +31,8 @@ npx @hungv47/syncthis run
 ```
 
 That mirrors MCP servers across every detected agent, then refreshes skills via `npx skills update -y`. Add `--dry-run` to preview without writing.
+
+> syncthis ships as a single self-contained bundle that runs on **Node ≥18 — no Bun required to use it**. (Bun is only needed to hack on the source.)
 
 If you'd rather have `syncthis` on your `PATH`:
 
@@ -46,7 +52,7 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
-| ✅ mirrors plugins from one agent to another (Claude ↔ Codex) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ mirrors plugins between agents (Claude ↔ Codex natively; Cursor write-only) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
 | ✅ lists installed plugins per agent (`plugin list`) | ❌ uninstalls plugins (use `claude plugin uninstall`, `codex plugin remove`) |
 
 ## How it works
@@ -78,8 +84,8 @@ syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every othe
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # MCP coverage + conflict report
 
-# Plugins (Claude ↔ Codex)
-syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agent
+# Plugins (Claude ↔ Codex natively; Cursor write-only from a Claude primary)
+syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run] # push primary's plugins onto the other agents
 syncthis plugin list                        # list installed plugins per agent (read-only)
 syncthis help
 ```
@@ -114,7 +120,16 @@ syncthis help
 3. **Detects conflicts.** If the same server name has different configs across agents, syncthis leaves each agent's own version untouched and reports the conflict — you resolve manually.
 4. **Refreshes skills** by running `npx skills update -y`. Skills sync is delegated to `vercel-labs/skills`, which handles 55 agents.
 
-Every target file is backed up to `<file>.syncthis.bak` on the first write so you can recover if something goes wrong.
+### Safe by design
+
+syncthis writes to files that hold your whole agent config — often with API keys — so every write is defensive:
+
+- **Additive — never deletes.** `run`/`sync` only ever adds servers. Deletion is opt-in and explicit (`syncthis rm`), always with a diff and confirmation.
+- **Never picks a winner.** If the same server name has different configs across agents, syncthis leaves each agent's own copy untouched and reports the conflict for you to resolve. It won't silently overwrite your config with another agent's.
+- **Backed up on first write.** Each target file is copied to `<file>.syncthis.bak` the first time syncthis touches it, so the original is always recoverable.
+- **Atomic + `0600`.** Writes go to a temp file and are atomically renamed into place (a crash can't truncate your config), clamped to owner-only `0600` since they can carry secrets.
+- **Idempotent.** Re-running converges — including SSE/HTTP servers — instead of churning or raising phantom conflicts.
+- **Preview anything** with `--dry-run`; destructive commands refuse to run unattended without `--yes`.
 
 ## Directional sync
 
@@ -160,7 +175,7 @@ syncthis rm executor --all --yes
 
 ## Plugins
 
-Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. They're only portable between agents that expose a native install CLI, which today means **Claude Code (`claude plugin install`) and Codex (`codex plugin add`)**. So syncthis does exactly two plugin things: list what's installed, and mirror one of those two agents onto the other.
+Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. Three agents can consume them: **Claude Code, Codex, and Cursor**. Claude ↔ Codex sync natively (each has a read+write `plugin` CLI). **Cursor** has no list CLI, so it's a **write-only** target: syncthis pushes the primary's plugins to it by source repo (`npx plugins add <repo> --target cursor`), additive-only, and only from a Claude primary (only Claude exposes the marketplace→repo map Cursor needs). So `mirror` does three things: list what's installed, sync Claude ↔ Codex, and push to Cursor.
 
 ```bash
 # See what's installed where (read-only)
@@ -177,6 +192,8 @@ syncthis mirror claude-code --remove-stale --yes   # also uninstall plugins the 
 
 `mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and won't skip plugins the target only *appears* to have. It resolves each plugin to the target's own `<name>@<marketplace>` automatically.
 
+From a **Claude** primary, `mirror` also pushes every github-backed plugin to **Cursor** via `npx plugins add <repo> --target cursor`. Cursor's plugin state isn't readable, so this push is additive and unconditional (no diff, no stale removal) — re-running is idempotent on Cursor's side.
+
 A plugin the target can't install is reported as **skipped** with a reason, not a failure — the run only exits non-zero on a genuine install error. Two common skips:
 
 - **Marketplace not registered on the target.** Add `--provision` and syncthis will register the plugin's source repo for you (`npx plugins add <owner/repo> --target codex`, repo read from the primary's marketplace list) and then install it. Off by default to keep `mirror` fast and local.
@@ -184,7 +201,7 @@ A plugin the target can't install is reported as **skipped** with a reason, not 
 
 Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`).
 
-**Why not the other agents?** Cursor has no plugin install CLI, and OpenCode plugins are npm runtime modules (a different format) — neither can be a mirror target. The remaining 7 agents have no GitHub-bundle plugin surface at all. They all stay in MCP-sync + skills scope.
+**Why not the other agents?** OpenCode plugins are npm runtime modules (a different format), and the remaining 7 agents have no GitHub-bundle plugin surface at all — so they can't be plugin-mirror targets. They still stay in MCP-sync scope, and they receive the *skills* bundled inside your Claude plugins via `npx skills` (see Skills below) — that's how the 8 non-plugin agents get the portable part of a plugin.
 
 ## Desktop-owned servers
 
@@ -197,6 +214,23 @@ Paper and Pencil can be desktop-owned: the config may be synced, but the server 
 ## Skills
 
 Skills are handled entirely by [`npx skills`](https://github.com/vercel-labs/skills) (Vercel Labs). syncthis runs `npx skills update -y` as part of `run`/`sync` to refresh registry-installed skills. For installing skills, use `npx skills add <repo>` directly. See [skills.sh](https://skills.sh) for the registry.
+
+## Troubleshooting
+
+Run `syncthis doctor` first — it reports each agent's config status, per-server coverage, conflicts, and any unmanaged side files, and exits non-zero if conflicts exist.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `N conflict(s) — left each agent's own copy untouched` | The same server name has different configs in different agents. syncthis won't choose for you. | `syncthis doctor` shows where each version lives. Delete the one you don't want (in that agent's config), then re-run `syncthis run`. |
+| A server you removed keeps coming back | Union sync is additive — if the server still exists in *any* agent, it re-propagates. | Remove it everywhere in one pass: `syncthis rm <server> --all --dry-run`, review, then `--yes`. |
+| `refusing destructive write without --yes` (exit 2) | A destructive command (`<from> <to>`, `from --all`, `rm`, `mirror`) was run non-interactively (CI, pipe) with no TTY to confirm at. | Add `--yes` to confirm in non-interactive contexts, or run it in a terminal. |
+| `cannot read source <agent>: …` | The source agent's config is missing or malformed, so a directional sync would look like "delete everything." | syncthis bails before writing. Fix or create that agent's config, or sync from a different source. |
+| `target is a symlink, refusing to write through it` | The agent config (or its `.syncthis.bak`) is a symlink. | Intentional — syncthis won't clobber a symlink. Replace it with a regular file if you want syncthis to manage it. |
+| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace, or it's a skills-only bundle. Skips are expected, not failures. | Add `--provision` to register the marketplace first; for skills-only bundles, `syncthis run` syncs them as skills (via `npx skills`). |
+| `… CLI not found on PATH` during `mirror`/`plugin list` | The agent's own CLI (`claude`, `codex`, `npx plugins`) isn't installed. | Install that agent's CLI; syncthis drives plugins through it, it doesn't bundle one. |
+| Skills step says it failed or timed out | `npx skills` hit the network and was slow/unavailable. | Non-fatal — MCP sync still completed. Re-run `syncthis skills` later, or `syncthis run --no-skills` to skip it. |
+
+syncthis honors `NO_COLOR` (disable ANSI), and `$COPILOT_HOME` / `$OPENCLAW_CONFIG_PATH` to relocate those two agents' configs (must resolve under `$HOME`).
 
 ## License
 

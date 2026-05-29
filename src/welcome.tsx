@@ -17,7 +17,7 @@ const COMMANDS: CommandRow[] = [
   { cmd: "syncthis mcp / skills", desc: "MCP-only or skills-only sync" },
   { cmd: "syncthis <from> <to>", desc: "one-way MCP mirror between two agents" },
   { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
-  { cmd: "syncthis mirror <primary>", desc: "push plugins from primary (claude ↔ codex)" },
+  { cmd: "syncthis mirror <primary>", desc: "push plugins from primary (claude ↔ codex + cursor)" },
   { cmd: "syncthis plugin list", desc: "list installed plugins per agent" },
   { cmd: "syncthis doctor", desc: "MCP coverage + conflict report" },
   { cmd: "syncthis help", desc: "full help text" },

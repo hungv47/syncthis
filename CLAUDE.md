@@ -11,8 +11,8 @@ It is a sync layer, not an installer — it reads each agent's existing config, 
 
 It does exactly three things, deliberately kept minimal:
 - **MCP servers** — cross-agent union sync (the unique core; no upstream tool does this).
-- **Plugins** — `mirror` one agent's plugins onto another, limited to the two agents with a native install CLI: **Claude Code ↔ Codex**. Plus read-only `plugin list`. Plugins are installed artifact bundles, not portable config records, so the cohort can't be widened without an install CLI per agent.
-- **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills`), which supports 55 agents. syncthis just shells out to `npx skills update -y` after MCP sync.
+- **Plugins** — `mirror` one agent's plugins onto the other plugin-capable agents. The full plugin cohort is **Claude Code, Codex, Cursor** (`npx plugins targets`). Claude ↔ Codex sync natively (each has a read+write `plugin` CLI); Cursor is a **write-only** target (no list CLI) fed via `npx plugins add <repo> --target cursor` from a Claude primary. Plus read-only `plugin list`. The other 8 agents can't consume plugins at all.
+- **Skills** — delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills`, 55 agents). Two parts: `npx skills update -y` (refresh), and `skills from-plugins` — surface the skills *bundled inside* Claude plugins (which live in `~/.claude/plugins/marketplaces/*/skills`, not the skills dir) to the **8 non-plugin agents** via `npx skills add <repo>`. Plugin agents are intentionally excluded: they already have those skills as proper namespaced plugins, so re-adding them flat would duplicate and collide.
 
 A v0.4 plugin observability layer (`status`) and removal subsystem (`plugin rm` / `marketplace rm`) were removed in 0.5 — the observability premise (Codex silently drops nested-skill plugins) turned out fictional, and uninstalling is each agent's own concern. Don't reintroduce them without a concrete, verified need.
 
@@ -20,11 +20,11 @@ Distribution: npm package `@hungv47/syncthis`.
 
 ## Stack
 
-- **Runtime:** Bun (engines `bun >=1.0.0`). Single-package, no workspaces.
-- **Language:** TypeScript 5, `module: ESNext`, no bundler.
-- **Runtime deps:** `smol-toml` (Codex TOML), `js-yaml` (Hermes YAML), `json5` (OpenClaw JSON5), `@clack/prompts` (TUI).
+- **Runtime:** Bun for development (`bun bin/syncthis.ts`); the published artifact runs on **Node ≥18**. Source uses only `node:*` builtins (`node:fs/promises`, `node:child_process`) — no `Bun.*` APIs — so it bundles cleanly for Node. engines: `{ node: ">=18", bun: ">=1.0.0" }`.
+- **Language:** TypeScript 5, `module: ESNext`. No bundler in dev; `bun build --target=node` for distribution only.
+- **Bundled deps (compiled in, shipped as devDependencies):** `smol-toml` (Codex TOML), `js-yaml` (Hermes YAML), `json5` (OpenClaw JSON5), `@clack/prompts` (TUI), `ink`/`react`/`ink-big-text`/`ink-gradient` (welcome banner). They're inlined into the bundle, so `npx` installs **zero** transitive deps.
 - **Tests:** `bun:test`. Run with `bun test`.
-- **Bin entry:** `bin/syncthis.mjs` — Node `.mjs` shim that spawns `bun bin/syncthis.ts`. The shim exists because npm's bin-map handling on some shells munges paths starting with `./` and refuses `.ts` extensions; a `.mjs` shim sidesteps both.
+- **Bin entry / build:** `bin/syncthis.ts` is the dev entry (run by Bun). `scripts/build.ts` (`bun run build`) bundles it to `dist/syncthis.mjs` via `bun build --target=node`, rewrites the shebang to `#!/usr/bin/env node`, and that self-contained file is the published `bin`. So `npx @hungv47/syncthis` works for any Node user without Bun. Don't point `bin` at the raw `.ts` (npm rejects it) or reintroduce a Bun-spawning shim (the whole reason to bundle was to drop the Bun runtime requirement).
 
 ## Layout
 
@@ -48,20 +48,22 @@ src/
   plugins/            → plugin layer (claude ↔ codex only)
     claude.ts         → read (claude plugin list --json) + installPlugin + removePlugin
     codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace) + removePlugin
-    mirror.ts         → primary → other plugin agent: diff installs/removes, --remove-stale guard
-    shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier
+    mirror.ts         → primary → other plugin agents: claude↔codex diff installs/removes + cursor push (npx plugins)
+    shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeRepoSlug
     types.ts          → PluginAdapter interface + records
-    index.ts          → plugin cohort registry ([claude, codex]) + listPlugins()
+    index.ts          → plugin adapter registry ([claude, codex]) + listPlugins()
+  skills.ts           → surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add` (skill cohort = adapters − plugin cohort)
   sync.ts             → core: read all → compute union → write back, plus runDirectional / runFanOut / runRemove
   doctor.ts           → MCP coverage + conflict report
   tui.ts              → interactive picker (@clack/prompts)
   welcome.tsx         → first-run ink banner
-  io.ts               → readJson/writeJson/readText/writeText, 0600 perms, .syncthis.bak
+  io.ts               → readJson/writeJson/readText/writeText, atomic temp+rename, 0600 perms, .syncthis.bak
   types.ts            → shared MCP types (AgentId union)
 bin/
-  syncthis.ts         → CLI entrypoint (parsed by bun)
-  syncthis.mjs        → npm bin shim (spawns bun on the .ts entry)
-tests/                → sync, adapters, mirror, plugin-adapters, plugin-install
+  syncthis.ts         → CLI entrypoint (dev: run by bun; bundled to dist/ for release)
+scripts/
+  build.ts            → bun build --target=node → dist/syncthis.mjs (node shebang, self-contained)
+tests/                → sync, adapters, mirror, plugin-adapters, plugin-install, io, skills
 .deepsec/             → self-contained deepsec scanner config (its own package.json + lockfile)
 ```
 
@@ -73,20 +75,21 @@ syncthis run    [--dry-run] [--no-skills]    # MCP union + skills (alias for syn
 syncthis sync   [--dry-run] [--no-skills]
 syncthis mcp    [--dry-run]                  # MCP only
 syncthis skills                              # skills only — `npx skills update -y`
+syncthis skills from-plugins [--dry-run]     # add Claude-plugin-bundled skills to the 8 non-plugin agents
 syncthis <from> <to> [--yes] [--dry-run]     # one-way MCP mirror A → B
 syncthis from <agent> --all [--yes] [--dry-run]   # fan one agent out to all others
 syncthis rm <server> --all [--yes] [--dry-run]    # remove one MCP server everywhere
 syncthis doctor                              # MCP coverage + conflicts
-syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]  # plugin mirror (claude ↔ codex)
+syncthis mirror <primary> [--provision] [--remove-stale] [--yes] [--dry-run]  # plugin mirror (claude↔codex + cursor)
 syncthis plugin list                         # read-only plugin inventory
 syncthis help
 ```
 
-`run`/`sync` does, in order: read all 11 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → run `npx skills update -y` unless `--no-skills`.
+`run`/`sync` does, in order: read all 11 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → (unless `--no-skills`) surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add`, then run `npx skills update -y`. The skills passes are additive only. Plugin/cursor propagation is **not** part of `run` — it stays explicit in `mirror`.
 
 `<from> <to>` is a destructive one-way MCP mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
 
-`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agent via its native CLI; `--remove-stale` also uninstalls what the primary lacks. Diff + confirm or `--yes`. `--provision` (opt-in) registers a plugin's source marketplace on the target before installing — Codex shells `npx plugins add <owner/repo> --target codex` (repo resolved from the primary's `marketplace list`), then `codex plugin add <name>@<marketplace>`. Skills-only bundles and multi-plugin-repo non-primary plugins still can't be installed as Codex plugins (the former sync via `npx skills`; the latter is an upstream snapshot defect) — both are reported as `skipped`, not failed.
+`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agents. Claude ↔ Codex go via the native CLI (`--remove-stale` also uninstalls what the primary lacks); **Cursor** is pushed by source repo via `npx plugins add <repo> --target cursor` — additive only (cursor has no list CLI, so it can't be diffed or have stale removals), and supported only from a **Claude primary** (only Claude exposes the marketplace→repo map cursor needs). Diff + confirm or `--yes`. `--provision` (opt-in) registers a plugin's source marketplace on a Codex target before installing — shells `npx plugins add <owner/repo> --target codex` (repo resolved from the primary's `marketplace list`), then `codex plugin add <name>@<marketplace>`. Skills-only bundles and multi-plugin-repo non-primary plugins still can't be installed as Codex plugins (the former sync via `npx skills`; the latter is an upstream snapshot defect) — both are reported as `skipped`, not failed.
 
 `doctor` prints per-server coverage across agents and any conflicts. Exits non-zero if conflicts present.
 
@@ -101,9 +104,9 @@ syncthis help
 
 ## Distribution
 
-- **npm:** `@hungv47/syncthis` (current: `0.5.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet.
-- **Install:** `bun install -g @hungv47/syncthis` or `npm install -g @hungv47/syncthis`.
-- **The `.mjs` bin shim is intentional** — see Stack note above. Don't try to point `bin` directly at a `.ts` file or a path with leading `./`.
+- **npm:** `@hungv47/syncthis` (current: `0.7.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet. `prepublishOnly` runs `bun test && bunx tsc --noEmit && bun scripts/build.ts`, so the published `dist/` is always freshly built and tested.
+- **Install:** `npm install -g @hungv47/syncthis`, `bun install -g @hungv47/syncthis`, or just `npx @hungv47/syncthis run`. Runs on Node ≥18 — no Bun needed.
+- **Published artifact = one self-contained file.** `files` ships only `dist/syncthis.mjs` (+ README, LICENSE). All runtime deps are bundled in, so `bun publish`/`npm publish` produces a ~470 KB tarball that installs zero transitive deps. Don't add runtime `dependencies` back to `package.json` (they'd be installed redundantly) or point `bin` at the raw `.ts`.
 
 ## Deepsec integration
 

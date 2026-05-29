@@ -1,10 +1,10 @@
-import { mkdir, lstat, copyFile, writeFile, chmod, stat } from "node:fs/promises";
+import { mkdir, lstat, copyFile, writeFile, chmod, stat, rename, rm, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export async function readJson<T = unknown>(path: string): Promise<T | null> {
   try {
-    const text = await Bun.file(path).text();
+    const text = await readFile(path, "utf8");
     if (!text.trim()) return {} as T;
     return JSON.parse(text) as T;
   } catch (err) {
@@ -19,7 +19,7 @@ export async function writeJson(path: string, data: unknown, opts?: { backup?: b
 
 export async function readText(path: string): Promise<string | null> {
   try {
-    return await Bun.file(path).text();
+    return await readFile(path, "utf8");
   } catch (err) {
     if (isNotFound(err)) return null;
     throw err;
@@ -36,7 +36,7 @@ async function writeSafe(path: string, content: string | Uint8Array, opts?: { ba
     throw new Error(`syncthis: target is a symlink, refusing to write through it: ${path}`);
   }
   if (opts?.backup) await backupIfExists(path);
-  await writeRestrictive(path, content);
+  await writeAtomic(path, content);
 }
 
 async function isSymlink(p: string): Promise<boolean> {
@@ -48,15 +48,25 @@ async function isSymlink(p: string): Promise<boolean> {
   }
 }
 
-async function writeRestrictive(path: string, content: string | Uint8Array) {
-  let preserved: number | null = null;
+// Atomic, secret-safe write. These files hold a user's entire agent config (and
+// often API keys), so a half-write must never be observable:
+//   1. write the new content to a sibling temp file clamped to 0600 (sacred §4),
+//   2. rename it over the target — atomic on the same filesystem.
+// A crash / ENOSPC mid-write thus leaves the original intact rather than a
+// truncated file that would silently read back as `{}`. rename also replaces the
+// inode wholesale, so the final mode is exactly 0600 regardless of the target's
+// prior permissions — fixing the old `chmod(preserved & 0o600)` path that turned a
+// pre-existing 0o400 file unwritable and bricked the next sync.
+async function writeAtomic(path: string, content: string | Uint8Array) {
+  const tmp = join(dirname(path), `.${basename(path)}.syncthis.${process.pid}.tmp`);
   try {
-    preserved = (await stat(path)).mode & 0o777;
+    await writeFile(tmp, content, { mode: 0o600 });
+    await chmod(tmp, 0o600); // mode arg is ignored if the temp somehow pre-exists; force it
+    await rename(tmp, path);
   } catch (err) {
-    if (!isNotFound(err)) throw err;
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
   }
-  await writeFile(path, content, { mode: 0o600 });
-  if (preserved !== null) await chmod(path, preserved & 0o600);
 }
 
 export async function backupIfExists(path: string) {

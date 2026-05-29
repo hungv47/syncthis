@@ -184,14 +184,15 @@ describe("claude plugin adapter", () => {
       ]),
     );
     const map = await claudePluginAdapter.marketplaceSources!();
-    expect(map.get("claude-code-warp")).toBe("warpdotdev/claude-code-warp");
-    expect(map.has("local-mkt")).toBe(false); // non-github omitted
-    expect(map.has("no-repo")).toBe(false); // no repo omitted
+    expect(map).not.toBeNull();
+    expect(map!.get("claude-code-warp")).toBe("warpdotdev/claude-code-warp");
+    expect(map!.has("local-mkt")).toBe(false); // non-github omitted
+    expect(map!.has("no-repo")).toBe(false); // no repo omitted
   });
 
-  test("marketplaceSources returns empty map on non-array JSON (no throw)", async () => {
+  test("marketplaceSources returns null on non-array JSON (read failure)", async () => {
     await installFakeClaude("[]", JSON.stringify({ marketplaces: [] }));
     const map = await claudePluginAdapter.marketplaceSources!();
-    expect(map.size).toBe(0);
+    expect(map).toBeNull();
   });
 });

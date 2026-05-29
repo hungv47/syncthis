@@ -1,4 +1,4 @@
-import { intro, outro, select, isCancel, cancel, log } from "@clack/prompts";
+import { intro, outro, select, isCancel, cancel, log, note, spinner } from "@clack/prompts";
 import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import { runMirror, mirrorHasChanges } from "./plugins/mirror.ts";
@@ -18,22 +18,31 @@ type PickerChoice =
 export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
 
+  note(
+    "Shares your MCP servers + skills across every AI coding agent you use.\n" +
+      "It reads what each agent already has — it doesn't install anything new.\n" +
+      "Anything that overwrites or deletes always asks you first.",
+    "what is this?",
+  );
+
+  const options: Array<{ value: PickerChoice; label: string; hint?: string }> = [
+    { value: "sync", label: "Sync everything  (recommended)", hint: "share MCP servers + skills across all agents — only adds, never deletes" },
+    { value: "mcp", label: "Sync MCP servers only", hint: "same as sync, but skip the skills step" },
+    { value: "skills", label: "Update skills only", hint: "refresh skills via npx skills update -y" },
+    { value: "mirror", label: "Copy plugins between agents", hint: "claude ↔ codex, and push to cursor — shows a preview, asks before writing" },
+    { value: "directional", label: "Copy MCP servers from one agent to another", hint: "overwrites the destination — shows a diff, asks before writing" },
+    { value: "doctor", label: "Check for problems", hint: "which servers each agent has + conflicts (read-only)" },
+    { value: "plugin-list", label: "List installed plugins", hint: "what's installed per agent (read-only)" },
+    { value: "quit", label: "Quit", hint: "" },
+  ];
   const choice = (await select({
-    message: "what do you want to do?",
-    options: [
-      { value: "sync", label: "sync — MCP union + skills (all agents)" },
-      { value: "mcp", label: "mcp — MCP union only (no skills)" },
-      { value: "skills", label: "skills — `npx skills update -y`" },
-      { value: "mirror", label: "mirror — push one agent's plugins onto the other (claude ↔ codex)" },
-      { value: "directional", label: "directional — one-way MCP mirror between two agents" },
-      { value: "doctor", label: "doctor — MCP coverage + conflicts" },
-      { value: "plugin-list", label: "plugin list — what's installed per agent" },
-      { value: "quit", label: "quit" },
-    ],
+    message: "What do you want to do? (↑↓ to move, enter to pick)",
+    initialValue: "sync" as PickerChoice,
+    options,
   })) as PickerChoice | symbol;
 
   if (isCancel(choice) || choice === "quit") {
-    cancel("aborted.");
+    cancel("aborted — nothing was changed.");
     return;
   }
 
@@ -66,22 +75,39 @@ export async function showInteractivePicker(): Promise<void> {
     return;
   }
 
-  outro("done. run `syncthis help` for non-interactive commands.");
+  outro("Done. Re-run `syncthis` anytime, or `syncthis help` for the full command list.");
 }
 
 async function doSync(opts: { skipSkills?: boolean }) {
-  const r = await runSync({ skipSkills: opts.skipSkills });
+  const s = spinner();
+  s.start(opts.skipSkills ? "Syncing MCP servers across agents…" : "Syncing MCP servers + skills across agents…");
+  const r = await runSync({
+    skipSkills: opts.skipSkills,
+    onPluginSkillProgress: (repo, i, total) => s.message(`adding plugin skills to other agents… ${i}/${total} (${repo})`),
+  });
+  s.stop("Sync complete.");
+
   const names = new Set<string>();
   for (const read of r.reads) for (const n of Object.keys(read.servers)) names.add(n);
-  log.success(`${names.size} server name(s) across ${r.reads.length} agent(s)`);
-  if (r.conflicts.length) log.warn(`${r.conflicts.length} conflict(s) — left untouched, see \`syncthis doctor\``);
+  log.success(`Shared ${names.size} MCP server(s) across ${r.reads.length} agents.`);
+  if (r.conflicts.length) log.warn(`${r.conflicts.length} conflict(s) left untouched — run "Check for problems" (doctor) for detail.`);
   const failed = r.writes.filter((w) => w.status === "failed");
-  if (failed.length) log.error(`${failed.length} adapter write(s) failed`);
+  if (failed.length) log.error(`${failed.length} agent(s) couldn't be written.`);
+
+  if (r.pluginSkills?.ran) {
+    const added = r.pluginSkills.results.filter((x) => x.status === "added").length;
+    const skipped = r.pluginSkills.results.filter((x) => x.status === "skipped").length;
+    const psFailed = r.pluginSkills.results.filter((x) => x.status === "failed").length;
+    if (added || psFailed) {
+      const parts = [`${added} added`, skipped ? `${skipped} already synced` : "", psFailed ? `${psFailed} failed` : ""].filter(Boolean);
+      log.info(`Plugin skills → ${r.pluginSkills.agents.length} non-plugin agents: ${parts.join(", ")}.`);
+    }
+  }
 
   if (r.skills) {
-    if (!r.skills.ran) log.info(`skills: ${r.skills.message ?? "skipped"}`);
-    else if (r.skills.ok) log.success("skills: npx skills update -y");
-    else log.error(`skills: ${r.skills.message ?? "failed"}`);
+    if (!r.skills.ran) log.info(`Skills update: ${r.skills.message ?? "skipped"}.`);
+    else if (r.skills.ok) log.success("Skills refreshed (npx skills update).");
+    else log.error(`Skills update failed: ${r.skills.message ?? "unknown error"}.`);
   }
 }
 
