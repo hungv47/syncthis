@@ -80,7 +80,10 @@ function codexListTable(rows: CodexRow[]): string {
 // Fakes for the --provision path: a `codex` whose `plugin list` gains the plugin
 // only AFTER fake `npx plugins add` drops a sentinel — exercising the
 // provision → re-read → install chain.
-async function installProvisionFakes(name: string, opts: { npxFail?: { exit: number; stderr: string } } = {}) {
+async function installProvisionFakes(
+  name: string,
+  opts: { npxFail?: { exit: number; stderr: string }; neverExposes?: boolean } = {},
+) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
   const sentinel = join(workDir, "provisioned");
@@ -94,10 +97,16 @@ async function installProvisionFakes(name: string, opts: { npxFail?: { exit: num
       [`${name}@plugins-cli`, "not installed", "", `/cache/${name}`],
     ]),
   );
+  // neverExposes: a skills-only bundle — provisioning the repo succeeds (sentinel
+  // drops, npx exits 0) but `codex plugin list` NEVER shows a plugin of this name,
+  // so candidates stay 0 after the re-read. Exercises the skills-fallback path.
+  const listBody = opts.neverExposes
+    ? `cat ${absentFile}`
+    : `if [ -f ${sentinel} ]; then cat ${presentFile}; else cat ${absentFile}; fi`;
   const codex = `#!/bin/sh
 echo "codex $@" >> ${invocationsFile}
 if [ "$1 $2" = "plugin list" ]; then
-  if [ -f ${sentinel} ]; then cat ${presentFile}; else cat ${absentFile}; fi
+  ${listBody}
   exit 0
 fi
 exit 0
@@ -301,5 +310,23 @@ describe("codex installPlugin", () => {
     expect(res.message).toContain("retry with --provision");
     const inv = await readInvocations();
     expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    // No provision attempted → no skills-fallback repo handed back.
+    expect(res.skillsFallbackRepo).toBeUndefined();
+  });
+
+  test("provision: a skills-only bundle skips with a skillsFallbackRepo for the mirror", async () => {
+    // Provision succeeds but Codex's loader never exposes the plugin → skills-only
+    // bundle. The install skips, but hands back its source repo so the mirror can
+    // add the bundle's skills to Codex via `npx skills add`.
+    await installProvisionFakes("foo", { neverExposes: true });
+    const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
+    expect(res.status).toBe("skipped");
+    expect(res.skillsFallbackRepo).toBe("acme/foo");
+    expect(res.message).toMatch(/adding its skills to Codex/i);
+    const inv = await readInvocations();
+    // It DID provision (the source repo was registered)...
+    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    // ...but never ran a native `codex plugin add` (nothing exposes it).
+    expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
   });
 });

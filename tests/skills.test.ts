@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   PLUGIN_TARGET_AGENTS,
   addArgs,
+  addSkillRepos,
   addSkillsFromPlugins,
   resolvePluginSkillSources,
   skillCohort,
@@ -92,6 +93,38 @@ describe("addArgs", () => {
     expect(addArgs("owner/repo", ["opencode", "gemini-cli"])).toEqual([
       "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "opencode", "-a", "gemini-cli", "-y",
     ]);
+  });
+});
+
+describe("addSkillRepos", () => {
+  test("dedups, sorts, drops unsafe slugs, and dry-runs without shelling out", async () => {
+    const r = await addSkillRepos(["b/two", "a/one", "b/two", "../evil"], ["codex"], { dryRun: true });
+    expect(r).toEqual([
+      { repo: "a/one", status: "added", message: "dry-run" },
+      { repo: "b/two", status: "added", message: "dry-run" },
+    ]);
+    expect(await readInvocations()).toEqual([]);
+  });
+
+  test("shells `npx skills add <repo> -a <agent>` for the given agent", async () => {
+    await installFakeNpx({ exit: 0 });
+    const r = await addSkillRepos(["owner/kit"], ["codex"]);
+    expect(r).toEqual([{ repo: "owner/kit", status: "added" }]);
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.trim() === "npx -y skills add owner/kit -g -s * -a codex -y")).toBe(true);
+  });
+
+  test("a genuine non-zero exit is reported as failed (mirror counts it, exits non-zero)", async () => {
+    await installFakeNpx({ exit: 2, stderr: "network unreachable" });
+    const r = await addSkillRepos(["owner/kit"], ["codex"]);
+    expect(r[0]!.status).toBe("failed");
+    expect(r[0]!.message).toContain("network unreachable");
+  });
+
+  test("a no-skills bundle exit is a benign skip, not a failure", async () => {
+    await installFakeNpx({ exit: 1, stderr: "No skills found in repository" });
+    const r = await addSkillRepos(["owner/kit"], ["codex"]);
+    expect(r[0]!.status).toBe("skipped");
   });
 });
 

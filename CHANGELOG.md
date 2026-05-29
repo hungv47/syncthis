@@ -2,6 +2,16 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.8.0] — 2026-05-29
+
+Close the Codex coverage gap for skills-only plugin bundles.
+
+### Added
+- **`mirror <primary> --provision` now falls back to skills on Codex.** A plugin that's a skills-only bundle (or a multi-plugin-repo snapshot defect) can't load as a Codex *plugin*, so previously it reached Codex through no path at all — `run`'s skills pass deliberately excludes the plugin cohort. Under `--provision`, after the native install is skipped, the mirror now adds the bundle's skills to Codex via `npx skills add <repo> -a codex`, shown as a fallback row. Safe from duplication: it only fires for bundles Codex couldn't load as a plugin, so there's nothing to collide with. No new command or flag — it rides on the existing `--provision`.
+
+### Changed
+- The post-mirror skip tip now points at `--provision` (which can bring skills-only bundles to Codex as skills) instead of `syncthis run` (whose skills pass never targets Codex). The provisioned-but-unloadable skip message reflects the skills fallback.
+
 ## [0.7.0] — 2026-05-29
 
 Pre-launch hardening: runs on Node without Bun, idempotent for every transport, crash-safe writes.

@@ -48,11 +48,11 @@ src/
   plugins/            → plugin layer (claude ↔ codex only)
     claude.ts         → read (claude plugin list --json) + installPlugin + removePlugin
     codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace) + removePlugin
-    mirror.ts         → primary → other plugin agents: claude↔codex diff installs/removes + cursor push (npx plugins)
+    mirror.ts         → primary → other plugin agents: claude↔codex diff installs/removes + cursor push (npx plugins) + Codex skills-fallback for unloadable bundles under --provision (npx skills add)
     shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeRepoSlug
     types.ts          → PluginAdapter interface + records
     index.ts          → plugin adapter registry ([claude, codex]) + listPlugins()
-  skills.ts           → surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add` (skill cohort = adapters − plugin cohort)
+  skills.ts           → surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add` (skill cohort = adapters − plugin cohort); `addSkillRepos` adds specific repos to specific agents (used by mirror's Codex skills-fallback)
   sync.ts             → core: read all → compute union → write back, plus runDirectional / runFanOut / runRemove
   doctor.ts           → MCP coverage + conflict report
   tui.ts              → interactive picker (@clack/prompts)
@@ -89,7 +89,7 @@ syncthis help
 
 `<from> <to>` is a destructive one-way MCP mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
 
-`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agents. Claude ↔ Codex go via the native CLI (`--remove-stale` also uninstalls what the primary lacks); **Cursor** is pushed by source repo via `npx plugins add <repo> --target cursor` — additive only (cursor has no list CLI, so it can't be diffed or have stale removals), and supported only from a **Claude primary** (only Claude exposes the marketplace→repo map cursor needs). Diff + confirm or `--yes`. `--provision` (opt-in) registers a plugin's source marketplace on a Codex target before installing — shells `npx plugins add <owner/repo> --target codex` (repo resolved from the primary's `marketplace list`), then `codex plugin add <name>@<marketplace>`. Skills-only bundles and multi-plugin-repo non-primary plugins still can't be installed as Codex plugins (the former sync via `npx skills`; the latter is an upstream snapshot defect) — both are reported as `skipped`, not failed.
+`mirror <primary>` is the plugin equivalent: installs the primary's plugins onto the other plugin-capable agents. Claude ↔ Codex go via the native CLI (`--remove-stale` also uninstalls what the primary lacks); **Cursor** is pushed by source repo via `npx plugins add <repo> --target cursor` — additive only (cursor has no list CLI, so it can't be diffed or have stale removals), and supported only from a **Claude primary** (only Claude exposes the marketplace→repo map cursor needs). Diff + confirm or `--yes`. `--provision` (opt-in) registers a plugin's source marketplace on a Codex target before installing — shells `npx plugins add <owner/repo> --target codex` (repo resolved from the primary's `marketplace list`), then `codex plugin add <name>@<marketplace>`. A skills-only bundle (or a multi-plugin-repo non-primary plugin) still can't be installed as a Codex *plugin*, but under `--provision` the mirror falls back to adding its skills to Codex via `npx skills add <repo> -a codex` — the one path that gets that content into Codex. The native plugin install is reported `skipped` (not failed) with the skills add shown as a fallback row; a bundle with no skills after all is a benign skip. This is the **only** place the skill cohort widens to include Codex, and only because the plugin couldn't load — so there's no plugin to duplicate or collide with. Without `--provision` the same plugin stays a plain skip (we can't yet tell it's unloadable), with a tip to retry with `--provision`.
 
 `doctor` prints per-server coverage across agents and any conflicts. Exits non-zero if conflicts present.
 
@@ -104,7 +104,7 @@ syncthis help
 
 ## Distribution
 
-- **npm:** `@hungv47/syncthis` (current: `0.7.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet. `prepublishOnly` runs `bun test && bunx tsc --noEmit && bun scripts/build.ts`, so the published `dist/` is always freshly built and tested.
+- **npm:** `@hungv47/syncthis` (current: `0.8.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet. `prepublishOnly` runs `bun test && bunx tsc --noEmit && bun scripts/build.ts`, so the published `dist/` is always freshly built and tested.
 - **Install:** `npm install -g @hungv47/syncthis`, `bun install -g @hungv47/syncthis`, or just `npx @hungv47/syncthis run`. Runs on Node ≥18 — no Bun needed.
 - **Published artifact = one self-contained file.** `files` ships only `dist/syncthis.mjs` (+ README, LICENSE). All runtime deps are bundled in, so `bun publish`/`npm publish` produces a ~470 KB tarball that installs zero transitive deps. Don't add runtime `dependencies` back to `package.json` (they'd be installed redundantly) or point `bin` at the raw `.ts`.
 

@@ -55,6 +55,12 @@ export type PluginInstallResult = {
   target: string;
   status: InstallStatus;
   message?: string;
+  // Set on a `skipped` result when the plugin can't be installed natively here but
+  // its skills can still be added loosely: the owner/repo to hand to `npx skills
+  // add`. Today only Codex sets it — for a skills-only bundle it has provisioned
+  // but whose plugin its loader never exposes. The mirror collects these and runs
+  // the skills fallback so the bundle still reaches the agent.
+  skillsFallbackRepo?: string;
 };
 
 export interface PluginAdapter {

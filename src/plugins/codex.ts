@@ -200,11 +200,22 @@ export const codexPluginAdapter: PluginAdapter = {
         //    marketplace, or unsafe slug) — couldn't even attempt it.
         //  - no --provision: point the user at the flag.
         const message = provisioned
-          ? "provisioned, but Codex's plugin system doesn't expose it — likely a skills-only bundle (synced via `syncthis run` → npx skills, not the plugin mirror) or a multi-plugin repo snapshot defect"
+          ? "provisioned, but Codex's plugin system doesn't expose it — likely a skills-only bundle or a multi-plugin repo snapshot defect; adding its skills to Codex instead"
           : opts.provision
             ? "no usable source repo to provision from — its marketplace isn't a github owner/repo syncthis can register in Codex"
             : "no registered Codex marketplace provides it — retry with --provision, or add its marketplace (codex plugin marketplace add ...)";
-        return { agent: "codex", target: name, status: "skipped", message };
+        // When we provisioned the repo but Codex still won't load a plugin from it,
+        // it's a skills-only bundle (or a snapshot defect). Hand the source repo
+        // back so the mirror can add its skills to Codex via `npx skills add` — the
+        // one path that gets that content into Codex at all. sourceRepo is present
+        // and slug-validated here: provisioning required it (see the guard above).
+        return {
+          agent: "codex",
+          target: name,
+          status: "skipped",
+          message,
+          ...(provisioned ? { skillsFallbackRepo: opts.sourceRepo } : {}),
+        };
       } else if (candidates.includes(PREFERRED_MARKETPLACE)) {
         // Ambiguous, but prefer plugins-cli — the npx-plugins ecosystem these
         // Claude plugins came from — over Codex/OpenAI-bundled marketplaces.

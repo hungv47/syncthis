@@ -64,7 +64,9 @@ flags:
   --remove-stale  (mirror) also uninstall plugins the primary doesn't have.
   --provision     (mirror) register a plugin's marketplace on the target via
                   \`npx plugins add <repo> --target codex\` when it's missing,
-                  then install. Shells out and hits the network.
+                  then install. A skills-only bundle Codex still can't load as a
+                  plugin is added to Codex as skills (\`npx skills add\`) instead.
+                  Shells out and hits the network.
 
 removing a server: use \`syncthis rm <server> --all --dry-run\`, review the diff,
 then rerun with \`--yes\`. plain union sync will re-propagate a server if it
@@ -209,7 +211,7 @@ async function cmdMirror(argv: string[]) {
     console.log(dim("dry-run — no changes applied."));
     return;
   }
-  if (provision) console.log(dim("--provision: will register missing marketplaces via `npx plugins add` (network)."));
+  if (provision) console.log(dim("--provision: will register missing marketplaces via `npx plugins add`, and add skills-only bundles to Codex as skills via `npx skills add` (network)."));
   await confirmDestructive(!!values.yes);
   const applied = await runMirror({ from: from as AgentId, apply: true, removeStale, provision });
   printMirrorApplied(applied);
@@ -257,6 +259,9 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
         failed += 1;
         row("failed", t.to, ins.target, ins.message);
       } else if (ins.status === "skipped") {
+        // A skills-only bundle that fell back to `npx skills add` is reported by
+        // the skills-fallback row below — don't also print it as a bare skip.
+        if (ins.skillsFallbackRepo) continue;
         // Can't be mirrored to this target (no marketplace / ambiguous) — not
         // an error. Surface the reason so it's clear why, but don't fail the run.
         skipped += 1;
@@ -264,6 +269,20 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
       } else if (ins.status === "installed") {
         installed += 1;
         row("synced", t.to, ins.target, "installed");
+      }
+    }
+    for (const sf of t.skillsFallback ?? []) {
+      if (sf.status === "failed") {
+        failed += 1;
+        row("failed", t.to, sf.repo, `skills fallback: ${sf.message ?? "failed"}`);
+      } else if (sf.status === "added") {
+        installed += 1;
+        row("synced", t.to, sf.repo, "added as skills (npx skills — not loadable as a plugin)");
+      } else {
+        // "skipped" — the bundle had no skills after all (a snapshot-defect plugin
+        // with no SKILL.md). Nothing to add; surface why.
+        skipped += 1;
+        row("skipped", t.to, sf.repo, sf.message ?? "no skills in bundle");
       }
     }
     for (const rm of t.removes ?? []) {
@@ -294,7 +313,7 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport) 
     failed ? red(`${failed} failed`) : "",
   ].filter(Boolean);
   if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
-  if (skipped > 0) console.log(dim("tip: some skipped plugins are skills bundles — run `syncthis run` to sync those as skills."));
+  if (skipped > 0) console.log(dim("tip: skipped plugins couldn't be installed natively — re-run with --provision to register their marketplaces (skills-only bundles are then added to Codex as skills)."));
   // Only a genuine `codex plugin add` error is a failure; skips are expected.
   if (failed > 0) process.exit(1);
 }

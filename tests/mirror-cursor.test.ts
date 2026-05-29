@@ -150,3 +150,43 @@ describe("mirror cursor push", () => {
     expect(report.cursor.reason).toMatch(/couldn't read/i);
   });
 });
+
+describe("mirror codex skills-fallback (--provision)", () => {
+  test("a skills-only bundle Codex can't load is added to Codex as skills", async () => {
+    // Claude has `kit` under a github marketplace; Codex's plugin-list never shows
+    // it, even after provisioning → skills-only bundle. It must fall back to
+    // `npx skills add <repo> -a codex` rather than silently vanishing.
+    await fakeClaude([{ id: "kit@mkt1" }], [{ name: "mkt1", source: "github", repo: "owner/kit" }]);
+    await fakeCodex([]); // Codex has nothing, and its list never exposes `kit`
+    await fakeNpx(); // `plugins add` (provision + cursor) and `skills add` all exit 0
+
+    const report = await runMirror({ from: "claude-code", apply: true, provision: true });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+
+    // The native install skipped (skills-only) but carried the fallback repo…
+    const attempt = codex.installs!.find((i) => i.target === "kit");
+    expect(attempt?.status).toBe("skipped");
+    expect(attempt?.skillsFallbackRepo).toBe("owner/kit");
+    // …and the fallback added it as skills on Codex.
+    expect(codex.skillsFallback).toEqual([{ repo: "owner/kit", status: "added" }]);
+
+    const inv = await invocations();
+    expect(inv.some((l) => l.trim() === "npx -y skills add owner/kit -g -s * -a codex -y")).toBe(true);
+  });
+
+  test("without --provision there is no skills-fallback (stays a plain skip)", async () => {
+    await fakeClaude([{ id: "kit@mkt1" }], [{ name: "mkt1", source: "github", repo: "owner/kit" }]);
+    await fakeCodex([]);
+    await fakeNpx();
+
+    const report = await runMirror({ from: "claude-code", apply: true }); // no provision
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    const attempt = codex.installs!.find((i) => i.target === "kit");
+    expect(attempt?.status).toBe("skipped");
+    expect(attempt?.skillsFallbackRepo).toBeUndefined();
+    expect(codex.skillsFallback).toBeUndefined();
+
+    const inv = await invocations();
+    expect(inv.some((l) => /skills add/.test(l))).toBe(false);
+  });
+});

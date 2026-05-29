@@ -214,6 +214,29 @@ function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResul
   });
 }
 
+// Install specific source repos as loose skills into specific agents. Used by the
+// plugin mirror's Codex skills-fallback: when Codex can't load a skills-only bundle
+// as a plugin, its skills are still added here. Repos are deduped, sorted, and
+// slug-validated (an unsafe slug could be read as a flag by the skills CLI). One
+// `npx skills add` per repo, sequentially — concurrent invocations race on the
+// shared agent skill directories.
+export async function addSkillRepos(
+  repos: string[],
+  agents: readonly AgentId[],
+  opts: { dryRun?: boolean } = {},
+): Promise<SkillAddResult[]> {
+  const unique = [...new Set(repos)].filter((r) => isSafeRepoSlug(r)).sort();
+  const out: SkillAddResult[] = [];
+  for (const repo of unique) {
+    if (opts.dryRun) {
+      out.push({ repo, status: "added", message: "dry-run" });
+      continue;
+    }
+    out.push(await addOne(repo, agents));
+  }
+  return out;
+}
+
 // Surface skills bundled inside Claude's installed plugins to the skill-cohort
 // agents (everything that can't consume plugins natively). One `npx skills add`
 // per source repo, sequentially — concurrent invocations would race on the shared

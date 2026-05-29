@@ -21,6 +21,7 @@ import type {
   PluginRecord,
   PluginRemoveResult,
 } from "./types.ts";
+import { addSkillRepos, type SkillAddResult } from "../skills.ts";
 import type { AgentId } from "../types.ts";
 
 const CURSOR_PLUGINS_TIMEOUT_MS = 180_000;
@@ -40,6 +41,9 @@ export type MirrorTarget = {
   unsupportedReason?: string;
   installs?: PluginInstallResult[];
   removes?: PluginRemoveResult[];
+  // Skills added to this target as a fallback for plugins it couldn't install
+  // natively (skills-only bundles). Populated on apply only. Today only Codex.
+  skillsFallback?: SkillAddResult[];
 };
 
 export type CursorPushResult = { repo: string; status: "installed" | "failed"; message?: string };
@@ -161,6 +165,16 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
         );
       }
       target.installs = installs;
+      // Skills-fallback: any skipped install that handed back a source repo is a
+      // bundle this target can't load as a plugin (a skills-only bundle on Codex).
+      // Add its skills loosely so the content still reaches the agent — additive,
+      // and safe from duplication since there's no plugin here to collide with.
+      const fallbackRepos = installs
+        .map((i) => i.skillsFallbackRepo)
+        .filter((r): r is string => !!r);
+      if (fallbackRepos.length) {
+        target.skillsFallback = await addSkillRepos(fallbackRepos, [a.id]);
+      }
       if (opts.removeStale) {
         const removes: PluginRemoveResult[] = [];
         for (const p of remove) {

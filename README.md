@@ -92,7 +92,7 @@ syncthis help
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
-`--provision` (mirror) registers a plugin's source marketplace on the target before installing, when the target doesn't already have it (shells `npx plugins add` — hits the network).
+`--provision` (mirror) registers a plugin's source marketplace on the target before installing, when the target doesn't already have it (shells `npx plugins add` — hits the network). If the bundle still can't load as a Codex plugin (a skills-only bundle), its skills are added to Codex instead via `npx skills add`.
 `--remove-stale` (mirror) also uninstalls plugins on the target that the primary doesn't have.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
@@ -197,7 +197,7 @@ From a **Claude** primary, `mirror` also pushes every github-backed plugin to **
 A plugin the target can't install is reported as **skipped** with a reason, not a failure — the run only exits non-zero on a genuine install error. Two common skips:
 
 - **Marketplace not registered on the target.** Add `--provision` and syncthis will register the plugin's source repo for you (`npx plugins add <owner/repo> --target codex`, repo read from the primary's marketplace list) and then install it. Off by default to keep `mirror` fast and local.
-- **Skills-only bundles.** Some "plugins" are really skill collections; they sync as skills, not Codex plugins. `mirror` points you to `syncthis run` (which runs `npx skills update -y`) for those.
+- **Skills-only bundles.** Some "plugins" are really skill collections — Codex's plugin loader can't expose them. Under `--provision`, after the native install is skipped, `mirror` adds the bundle's skills to Codex via `npx skills add <repo> -a codex` (shown as a fallback row), so the content still reaches Codex. Without `--provision` it stays a plain skip, since we can't yet tell it's unloadable.
 
 Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`).
 
@@ -226,7 +226,7 @@ Run `syncthis doctor` first — it reports each agent's config status, per-serve
 | `refusing destructive write without --yes` (exit 2) | A destructive command (`<from> <to>`, `from --all`, `rm`, `mirror`) was run non-interactively (CI, pipe) with no TTY to confirm at. | Add `--yes` to confirm in non-interactive contexts, or run it in a terminal. |
 | `cannot read source <agent>: …` | The source agent's config is missing or malformed, so a directional sync would look like "delete everything." | syncthis bails before writing. Fix or create that agent's config, or sync from a different source. |
 | `target is a symlink, refusing to write through it` | The agent config (or its `.syncthis.bak`) is a symlink. | Intentional — syncthis won't clobber a symlink. Replace it with a regular file if you want syncthis to manage it. |
-| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace, or it's a skills-only bundle. Skips are expected, not failures. | Add `--provision` to register the marketplace first; for skills-only bundles, `syncthis run` syncs them as skills (via `npx skills`). |
+| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace, or it's a skills-only bundle Codex can't load. Skips are expected, not failures. | Add `--provision`: it registers the marketplace, and for a skills-only bundle Codex still can't load, adds its skills to Codex via `npx skills add` (a fallback row). |
 | `… CLI not found on PATH` during `mirror`/`plugin list` | The agent's own CLI (`claude`, `codex`, `npx plugins`) isn't installed. | Install that agent's CLI; syncthis drives plugins through it, it doesn't bundle one. |
 | Skills step says it failed or timed out | `npx skills` hit the network and was slow/unavailable. | Non-fatal — MCP sync still completed. Re-run `syncthis skills` later, or `syncthis run --no-skills` to skip it. |
 
