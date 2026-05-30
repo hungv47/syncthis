@@ -1,11 +1,25 @@
 import React from "react";
 import { Box, Text, render } from "ink";
-import BigText from "ink-big-text";
 import Gradient from "ink-gradient";
 
 import packageJson from "../package.json" with { type: "json" };
 
 const VERSION = packageJson.version;
+
+// The "syncthis" wordmark, pre-rendered in cfonts' `block` font. Embedded as a
+// static string on purpose: cfonts (via ink-big-text) loads its font JSON with a
+// runtime `require("../fonts/block.json")`, which `bun build` can't resolve, so the
+// single-file bundle threw "Font file for the font 'block' could not be found" for
+// every published (node-bundled) install. A static banner has no runtime font
+// dependency — the gradient still colors it. Regenerate via cfonts if the name changes.
+const WORDMARK = [
+  " ███████╗ ██╗   ██╗ ███╗   ██╗  ██████╗ ████████╗ ██╗  ██╗ ██╗ ███████╗",
+  " ██╔════╝ ╚██╗ ██╔╝ ████╗  ██║ ██╔════╝ ╚══██╔══╝ ██║  ██║ ██║ ██╔════╝",
+  " ███████╗  ╚████╔╝  ██╔██╗ ██║ ██║         ██║    ███████║ ██║ ███████╗",
+  " ╚════██║   ╚██╔╝   ██║╚██╗██║ ██║         ██║    ██╔══██║ ██║ ╚════██║",
+  " ███████║    ██║    ██║ ╚████║ ╚██████╗    ██║    ██║  ██║ ██║ ███████║",
+  " ╚══════╝    ╚═╝    ╚═╝  ╚═══╝  ╚═════╝    ╚═╝    ╚═╝  ╚═╝ ╚═╝ ╚══════╝",
+].join("\n");
 
 interface CommandRow {
   cmd: string;
@@ -17,7 +31,7 @@ const COMMANDS: CommandRow[] = [
   { cmd: "syncthis mcp / skills", desc: "MCP-only or skills-only sync" },
   { cmd: "syncthis <from> <to>", desc: "one-way MCP mirror between two agents" },
   { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
-  { cmd: "syncthis mirror <primary>", desc: "push plugins from primary (claude ↔ codex + cursor)" },
+  { cmd: "syncthis mirror <primary>", desc: "mirror one agent's plugins to every other agent (additive)" },
   { cmd: "syncthis plugin list", desc: "list installed plugins per agent" },
   { cmd: "syncthis doctor", desc: "MCP coverage + conflict report" },
   { cmd: "syncthis help", desc: "full help text" },
@@ -28,7 +42,7 @@ function Welcome() {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Gradient colors={["#7afb95", "#00d4ff"]}>
-        <BigText text="syncthis" font="block" />
+        <Text>{WORDMARK}</Text>
       </Gradient>
 
       <Box marginBottom={1} marginLeft={2}>

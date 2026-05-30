@@ -2,6 +2,11 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.9.1] — 2026-05-30
+
+### Fixed
+- **Welcome banner no longer errors with "Font file for the font 'block' could not be found."** The banner used `ink-big-text`, whose `cfonts` engine loads its font via a runtime `require("../fonts/block.json")` — a path the single-file `bun build` bundle can't resolve, so every node-bundled install (0.7.0–0.9.0) printed the cfonts error instead of the wordmark. The "syncthis" wordmark is now a static, pre-rendered string in `welcome.tsx` (gradient preserved), with no runtime font dependency. Dropped `ink-big-text`/`cfonts` from the bundle. Also refreshed the banner's stale `mirror` command description.
+
 ## [0.9.0] — 2026-05-29
 
 `mirror` now propagates a primary's plugin content to **every** other agent, can't fail on multi-plugin marketplaces, and can never uninstall.
