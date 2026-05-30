@@ -110,7 +110,7 @@ Diff + confirm or `--yes`. A failed primary read aborts loudly (an empty primary
 
 ## Distribution
 
-- **npm:** `@hungv47/syncthis` (current: `0.9.0`). Bump in `package.json` and tag a release; no automated publish pipeline yet. `prepublishOnly` runs `bun test && bunx tsc --noEmit && bun scripts/build.ts`, so the published `dist/` is always freshly built and tested.
+- **npm:** `@hungv47/syncthis` (see `package.json` for the current version). **Auto-published** by `.github/workflows/publish.yml`: bump `"version"` in `package.json`, commit, push to `main` — the workflow publishes to npm via **OIDC Trusted Publishing** (no token; needs the one-time npmjs.com trusted-publisher config in the workflow header) and creates the matching git tag + GitHub Release from the CHANGELOG section. A registry guard makes it a safe no-op when the version is unchanged. `prepublishOnly` (`bun test && bunx tsc --noEmit && bun scripts/build.ts`) runs inside `npm publish`, so the published `dist/` is always freshly built and tested. To release: bump the version **and** add a `## [x.y.z]` CHANGELOG section (used as the release notes).
 - **Install:** `npm install -g @hungv47/syncthis`, `bun install -g @hungv47/syncthis`, or just `npx @hungv47/syncthis run`. Runs on Node ≥18 — no Bun needed.
 - **Published artifact = one self-contained file.** `files` ships only `dist/syncthis.mjs` (+ README, LICENSE). All runtime deps are bundled in, so `bun publish`/`npm publish` produces a ~470 KB tarball that installs zero transitive deps. Don't add runtime `dependencies` back to `package.json` (they'd be installed redundantly) or point `bin` at the raw `.ts`.
 

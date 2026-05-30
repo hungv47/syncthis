@@ -2,6 +2,11 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.9.2] — 2026-05-30
+
+### Fixed
+- **`mirror` apply no longer looks frozen.** A full mirror runs many sequential `npx`/`codex` network calls (codex installs + cursor pushes + skill adds) — for a large plugin set that's 100+ ops over several minutes, and the apply printed nothing until it finished, so it looked hung. `runMirror` now takes an `onProgress` callback: the TUI shows a live spinner (`codex: <plugin> (12/28)`, `cursor: <repo> (5/41)`, `skills: <repo> (3/33)`) and the CLI streams per-item progress lines. Added an up-front "this hits the network, can take a few minutes" note. No behavior change — additive and idempotent as before, so it's always safe to interrupt and re-run.
+
 ## [0.9.1] — 2026-05-30
 
 ### Fixed

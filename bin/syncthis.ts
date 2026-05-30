@@ -223,7 +223,11 @@ async function cmdMirror(argv: string[]) {
     );
   }
   await confirmDestructive(!!values.yes);
-  const applied = await runMirror({ from: from as AgentId, apply: true, provision });
+  // A full mirror is many sequential npx/codex network calls — stream per-item
+  // progress to stderr so it doesn't look frozen.
+  const onProgress = (label: string, i: number, total: number) =>
+    process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
+  const applied = await runMirror({ from: from as AgentId, apply: true, provision, onProgress });
   printMirrorApplied(applied, provision);
 }
 

@@ -166,7 +166,20 @@ async function doMirror() {
     cancel("aborted.");
     return;
   }
-  const applied = await runMirror({ from: primary, apply: true, provision });
+  const s = spinner();
+  s.start("Mirroring — installing plugins + adding skills via npx (network; can take a few minutes)…");
+  // Stop the spinner on EVERY path — a throw would otherwise leave its render
+  // interval running, clobbering the cancel() error line and keeping the loop alive.
+  const applied = await runMirror({
+    from: primary,
+    apply: true,
+    provision,
+    onProgress: (label, i, total) => s.message(`${label}  (${i}/${total})`),
+  }).catch((err) => {
+    s.stop("Mirror failed.");
+    throw err;
+  });
+  s.stop("Mirror applied.");
 
   let added = 0;
   let covered = 0;

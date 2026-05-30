@@ -91,6 +91,10 @@ export type MirrorRunOpts = {
   // bundles back to skills. ON by default (the point of a mirror is to make content
   // reachable); pass false (`--no-provision`) for an offline / no-network run.
   provision?: boolean;
+  // Per-item progress for the apply phase. A full mirror runs many sequential
+  // `npx`/`codex` network calls (codex installs + cursor pushes + skill adds) with
+  // no other output, so without this the CLI/TUI look frozen. Called once per item.
+  onProgress?: (label: string, index: number, total: number) => void;
 };
 
 type SkillAddResult = Awaited<ReturnType<typeof addSkillRepos>>[number];
@@ -151,7 +155,8 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
       // Install by bare name and let the target resolve its own marketplace — the
       // primary's marketplace tag won't exist on the target.
       const installs: PluginInstallResult[] = [];
-      for (const p of add) {
+      for (const [i, p] of add.entries()) {
+        opts.onProgress?.(`${a.id}: ${p.name}`, i + 1, add.length);
         installs.push(await a.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p) }));
       }
       target.installs = installs;
@@ -201,8 +206,8 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     targets.push(target);
   }
 
-  const cursor = await pushToCursor(fromRead, sources, opts.apply);
-  const skillCohortPush = await pushToSkillCohort(opts.from, opts.apply);
+  const cursor = await pushToCursor(fromRead, sources, opts.apply, opts.onProgress);
+  const skillCohortPush = await pushToSkillCohort(opts.from, opts.apply, opts.onProgress);
 
   return { from: opts.from, fromRead, targets, cursor, skillCohort: skillCohortPush, applied: opts.apply };
 }
@@ -216,6 +221,7 @@ async function pushToCursor(
   fromRead: PluginAdapterRead,
   sources: Map<string, string> | null | undefined,
   apply: boolean,
+  onProgress?: (label: string, index: number, total: number) => void,
 ): Promise<CursorPush> {
   if (fromRead.error) {
     return { supported: false, reason: `primary unreadable: ${fromRead.error}`, repos: [], results: [] };
@@ -247,7 +253,8 @@ async function pushToCursor(
   if (!apply) return { supported: true, repos, results: [] };
 
   const results: CursorPushResult[] = [];
-  for (const repo of repos) {
+  for (const [i, repo] of repos.entries()) {
+    onProgress?.(`cursor: ${repo}`, i + 1, repos.length);
     const res = await run("npx", ["plugins", "add", repo, "--target", "cursor", "-y"], {
       timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS,
     });
@@ -272,7 +279,11 @@ async function pushToCursor(
 // kimi, opencode, …) via `npx skills add`. The source repos come from the Claude
 // plugin store, so only a Claude primary can supply them — a Codex primary is
 // reported unsupported with a clear reason (matching the cursor push).
-async function pushToSkillCohort(from: AgentId, apply: boolean): Promise<MirrorSkillCohort> {
+async function pushToSkillCohort(
+  from: AgentId,
+  apply: boolean,
+  onProgress?: (label: string, index: number, total: number) => void,
+): Promise<MirrorSkillCohort> {
   const agents = skillCohort();
   if (from !== "claude-code") {
     return {
@@ -286,7 +297,10 @@ async function pushToSkillCohort(from: AgentId, apply: boolean): Promise<MirrorS
     const sources = await resolvePluginSkillSources();
     return { supported: true, agents, report: { ran: sources.length > 0, dryRun: true, agents, sources, results: [] } };
   }
-  const report = await addSkillsFromPlugins({ agents });
+  const report = await addSkillsFromPlugins({
+    agents,
+    onProgress: (repo, i, total) => onProgress?.(`skills: ${repo}`, i, total),
+  });
   return { supported: true, agents, report };
 }
 
