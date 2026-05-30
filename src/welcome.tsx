@@ -26,15 +26,19 @@ interface CommandRow {
   desc: string;
 }
 
+// Descriptions are kept short on purpose: the row is `$ ` + a fixed-width command
+// column + the description, all in one Ink flex row, so a long description wraps
+// (and garbles) on an 80-col terminal. Keep each desc within ~43 chars.
 const COMMANDS: CommandRow[] = [
-  { cmd: "syncthis sync", desc: "MCP union + skills (all agents)" },
-  { cmd: "syncthis mcp / skills", desc: "MCP-only or skills-only sync" },
-  { cmd: "syncthis <from> <to>", desc: "one-way MCP mirror between two agents" },
+  { cmd: "syncthis sync", desc: "share MCP + skills with every agent" },
+  { cmd: "syncthis mirror <primary>", desc: "push one agent's plugins to every agent" },
+  { cmd: "syncthis mcp", desc: "MCP servers only (skip skills)" },
+  { cmd: "syncthis skills", desc: "refresh skills (npx skills update)" },
+  { cmd: "syncthis <from> <to>", desc: "one-way MCP copy between two agents" },
   { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
-  { cmd: "syncthis mirror <primary>", desc: "mirror one agent's plugins to every other agent (additive)" },
   { cmd: "syncthis plugin list", desc: "list installed plugins per agent" },
-  { cmd: "syncthis doctor", desc: "MCP coverage + conflict report" },
-  { cmd: "syncthis help", desc: "full help text" },
+  { cmd: "syncthis doctor", desc: "coverage + conflict report" },
+  { cmd: "syncthis help", desc: "full command list + flags" },
 ];
 
 function Welcome() {
@@ -46,7 +50,7 @@ function Welcome() {
       </Gradient>
 
       <Box marginBottom={1} marginLeft={2}>
-        <Text dimColor>Keep your AI coding agents in sync — MCP servers + skills.</Text>
+        <Text dimColor>Keep your AI coding agents in sync — MCP servers, skills &amp; plugins.</Text>
       </Box>
 
       {COMMANDS.map((c) => (

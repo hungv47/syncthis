@@ -2,6 +2,11 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.9.3] — 2026-05-30
+
+### Changed
+- **Refreshed the welcome banner.** The subtitle now reads "MCP servers, skills & plugins" (plugins were missing). Command descriptions are tightened so every row fits on one line — previously the `mirror` row wrapped and garbled (`$syncthis mirror` / `<primary>`) on narrow terminals because its description overflowed the command column. `mcp` and `skills` are now separate rows (they're distinct commands), and `mirror` is surfaced second as a headline command. No command behavior changed — banner copy only.
+
 ## [0.9.2] — 2026-05-30
 
 ### Fixed
