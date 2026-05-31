@@ -134,9 +134,6 @@ async function doMirror() {
   const provision = true;
 
   const preview = await runMirror({ from: primary, apply: false, provision });
-  if (preview.fromRead.error) {
-    throw new Error(`can't read ${primary}'s plugins: ${preview.fromRead.error}`);
-  }
   if (!mirrorHasChanges(preview)) {
     log.success("nothing to do — every agent already has the primary's plugin content.");
     return;

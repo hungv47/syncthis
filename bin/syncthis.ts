@@ -200,12 +200,6 @@ async function cmdMirror(argv: string[]) {
   const provision = !values["no-provision"];
 
   const preview = await runMirror({ from: from as AgentId, apply: false, provision });
-  // A failed primary read yields an empty plugin set, which would otherwise look
-  // like "nothing to mirror". Refuse loudly instead of silently no-op'ing.
-  if (preview.fromRead.error) {
-    console.error(red(`mirror: can't read ${from}'s plugins: ${preview.fromRead.error}`));
-    process.exit(1);
-  }
   printMirrorPreview(preview);
   if (!mirrorHasChanges(preview)) {
     console.log(dim("nothing to do."));

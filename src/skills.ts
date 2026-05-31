@@ -311,11 +311,13 @@ export async function addSkillsFromPlugins(
   // other path (a manual single-agent `npx skills add`, or a newly added adapter
   // widening the cohort) — rare, and resolved by a forced `skills from-plugins`.
   // Not worth an 8× per-agent `skills list` probe + a brittle id→display-name map.
-  const installed = await installedSkillNames();
+  const [installed, sourceSkills] = await Promise.all([
+    installedSkillNames(),
+    Promise.all(sources.map(async (source) => ({ source, names: await repoSkillNames(source.installLocation) }))),
+  ]);
   const results: SkillAddResult[] = [];
   const toAdd: PluginSkillSource[] = [];
-  for (const s of sources) {
-    const names = await repoSkillNames(s.installLocation);
+  for (const { source: s, names } of sourceSkills) {
     if (names && names.every((n) => installed.has(n))) {
       results.push({ repo: s.repo, status: "skipped", message: "already synced" });
     } else {

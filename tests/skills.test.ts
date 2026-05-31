@@ -190,6 +190,32 @@ describe("addSkillsFromPlugins", () => {
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });
 
+  test("preserves mixed skip/add results while scanning repo skills in parallel", async () => {
+    await writeMarketplaces({
+      a: {
+        source: { source: "github", repo: "owner/a" },
+        installLocation: join(workDir, "mp", "a"),
+        withSkills: true,
+        skills: ["x"],
+      },
+      b: {
+        source: { source: "github", repo: "owner/b" },
+        installLocation: join(workDir, "mp", "b"),
+        withSkills: true,
+        skills: ["y"],
+      },
+    });
+    await installFakeNpx({ listJson: '[{"name":"x"}]' });
+    const r = await addSkillsFromPlugins({ agents: ["opencode"] });
+    expect(r.results).toEqual([
+      { repo: "owner/a", status: "skipped", message: "already synced" },
+      { repo: "owner/b", status: "added" },
+    ]);
+    const inv = await readInvocations();
+    expect(inv.some((l) => /skills add owner\/a/.test(l))).toBe(false);
+    expect(inv.some((l) => /skills add owner\/b/.test(l))).toBe(true);
+  });
+
   test("guard walks category-nested skills and keys on frontmatter name", async () => {
     // forsvn-com/skills-style layout: skills/<category>/<skill>/SKILL.md, and the
     // frontmatter name differs from the dir name. The guard must enumerate the

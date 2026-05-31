@@ -122,6 +122,9 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     );
   }
   const fromRead = await primary.read();
+  if (fromRead.error) {
+    throw new Error(`mirror: cannot read primary ${opts.from}: ${fromRead.error}`);
+  }
 
   // The primary's marketplace name → owner/repo. Used to provision a marketplace a
   // target lacks, by the cursor push, and to map a plugin to its skills-fallback

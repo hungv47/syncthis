@@ -78,6 +78,11 @@ function codexAvailable(...ids: string[]): string {
 }
 
 describe("runMirror — preview (no apply)", () => {
+  test("aborts instead of treating an unreadable primary as an empty plugin set", async () => {
+    process.env.PATH = "";
+    await expect(runMirror({ from: "claude-code", apply: false })).rejects.toThrow(/cannot read primary claude-code/i);
+  });
+
   test("computes diff of plugins from primary to each target", async () => {
     // Claude has foo, bar. Codex has bar. Mirror claude → all should propose +foo to codex.
     await installFakeCli(

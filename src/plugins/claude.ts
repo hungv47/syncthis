@@ -20,9 +20,9 @@ type ClaudePluginListItem = {
 
 // The `claude` CLI loads every plugin/MCP on startup, so a cold invocation can run
 // several seconds (occasionally >15s on a loaded machine with many marketplaces).
-// The default 15s `run()` timeout is too tight for it: a timed-out plugin-list read
-// returns an empty primary, which would make a mirror silently look like "nothing
-// to do". Give the reads generous headroom; installs may also clone, so longer.
+// The default 15s `run()` timeout is too tight for it. Give reads generous
+// headroom so transient cold-start slowness does not abort a mirror; installs may
+// also clone, so they get longer.
 const READ_TIMEOUT_MS = 60_000;
 const INSTALL_TIMEOUT_MS = 180_000;
 
