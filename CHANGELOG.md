@@ -2,6 +2,14 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.9.4] — 2026-05-31
+
+### Fixed
+- **Plugin mirror now fails fast when the primary can't be read.** Direct `runMirror()` callers now get an error instead of a report that could look like an empty primary with nothing to mirror. CLI and TUI callers use the same core guard, so the behavior is consistent across entrypoints.
+
+### Changed
+- **Plugin-bundled skill discovery is faster on large plugin sets.** Local marketplace filesystem probes now run in parallel, and the already-synced guard overlaps its installed-skill probe with repo SKILL.md scans. `npx skills add` still runs sequentially to avoid races in shared skill directories.
+
 ## [0.9.3] — 2026-05-30
 
 ### Changed
