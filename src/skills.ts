@@ -83,16 +83,51 @@ export async function resolvePluginSkillSources(): Promise<PluginSkillSource[]> 
   if (!data || typeof data !== "object") return [];
   const out: PluginSkillSource[] = [];
   const seen = new Set<string>();
-  for (const [marketplace, entry] of Object.entries(data)) {
+  const candidates = await Promise.all(Object.entries(data).map(async ([marketplace, entry]) => {
     const repo = entry?.source?.repo;
     const installLocation = entry?.installLocation;
-    if (!repo || entry?.source?.source !== "github" || !installLocation) continue;
-    if (!isSafeRepoSlug(repo) || seen.has(repo)) continue;
-    if (!(await marketplaceHasSkills(installLocation))) continue;
-    seen.add(repo);
-    out.push({ marketplace, repo, installLocation });
+    if (!repo || entry?.source?.source !== "github" || !installLocation) return null;
+    if (!isSafeRepoSlug(repo)) return null;
+    if (!(await marketplaceHasSkills(installLocation))) return null;
+    return { marketplace, repo, installLocation };
+  }));
+  for (const source of candidates) {
+    if (!source || seen.has(source.repo)) continue;
+    seen.add(source.repo);
+    out.push(source);
   }
   return out.sort((a, b) => a.repo.localeCompare(b.repo));
+}
+
+// Source repos (owner/repo) that already have at least one plugin INSTALLED on a
+// target, determined by matching the target's installed plugin names against each
+// cloned marketplace's declared plugin entry names. A repo here is "covered": its
+// skills are present via the installed plugin, so the mirror must NOT re-add them
+// flat (`npx skills add`) — that would duplicate the plugin's namespaced skills.
+// Name-based, so it works even when the target's canonical name differs from the
+// primary's install id (the `github.com-*` re-run case). Best-effort: an unreadable
+// known_marketplaces.json yields an empty set (no coverage claimed → safe default).
+export async function resolveInstalledRepoCoverage(installedNames: Set<string>): Promise<Set<string>> {
+  const covered = new Set<string>();
+  let data: KnownMarketplaces | null;
+  try {
+    data = await readJson<KnownMarketplaces>(expandHome(CLAUDE_MARKETPLACES));
+  } catch {
+    return covered;
+  }
+  if (!data || typeof data !== "object") return covered;
+  const candidates = await Promise.all(Object.values(data).map(async (entry) => {
+    const repo = entry?.source?.repo;
+    const installLocation = entry?.installLocation;
+    if (!repo || entry?.source?.source !== "github" || !installLocation) return null;
+    if (!isSafeRepoSlug(repo)) return null;
+    const names = await marketplacePluginNames(installLocation);
+    return names.some((n) => installedNames.has(n)) ? repo : null;
+  }));
+  for (const repo of candidates) {
+    if (repo) covered.add(repo);
+  }
+  return covered;
 }
 
 // The plugin entry names a cloned marketplace declares in its marketplace.json.
@@ -113,34 +148,6 @@ async function marketplacePluginNames(installLocation: string): Promise<string[]
     }
   }
   return [];
-}
-
-// Source repos (owner/repo) that already have at least one plugin INSTALLED on a
-// target, determined by matching the target's installed plugin names against each
-// cloned marketplace's declared plugin entry names. A repo here is "covered": its
-// skills are present via the installed plugin, so the mirror must NOT re-add them
-// flat (`npx skills add`) — that would duplicate the plugin's namespaced skills.
-// Name-based, so it works even when the target's canonical name differs from the
-// primary's install id (the `github.com-*` re-run case). Best-effort: an unreadable
-// known_marketplaces.json yields an empty set (no coverage claimed → safe default).
-export async function resolveInstalledRepoCoverage(installedNames: Set<string>): Promise<Set<string>> {
-  const covered = new Set<string>();
-  let data: KnownMarketplaces | null;
-  try {
-    data = await readJson<KnownMarketplaces>(expandHome(CLAUDE_MARKETPLACES));
-  } catch {
-    return covered;
-  }
-  if (!data || typeof data !== "object") return covered;
-  for (const [, entry] of Object.entries(data)) {
-    const repo = entry?.source?.repo;
-    const installLocation = entry?.installLocation;
-    if (!repo || entry?.source?.source !== "github" || !installLocation) continue;
-    if (!isSafeRepoSlug(repo) || covered.has(repo)) continue;
-    const names = await marketplacePluginNames(installLocation);
-    if (names.some((n) => installedNames.has(n))) covered.add(repo);
-  }
-  return covered;
 }
 
 // Skill names already installed globally, per `npx skills list -g --json`. Used to
