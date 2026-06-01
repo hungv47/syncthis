@@ -577,6 +577,22 @@ async function manageMcpRemove() {
   const servers = pickRaw as string[];
   const agents = await pickAgents(listAgentIds(), "remove from which agents?");
   if (!agents) return;
+  // Sacred element #1: print a diff of exactly what each agent loses before any write.
+  let willChange = false;
+  for (const name of servers) {
+    const preview = await runRemove({ name, agents, apply: false });
+    const hits = preview.writes.filter((w) => w.status === "synced").map((w) => w.agent);
+    if (hits.length) {
+      willChange = true;
+      log.info(`- ${name}: remove from ${hits.join(", ")}`);
+    } else {
+      log.info(`· ${name}: not present on the chosen agents`);
+    }
+  }
+  if (!willChange) {
+    log.success("nothing to do — none of those servers are on the chosen agents.");
+    return;
+  }
   if (!(await confirmYes(`remove ${servers.length} server(s) from ${agents.length} agent(s)?`))) return;
   const s = spinner();
   s.start("Removing…");

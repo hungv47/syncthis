@@ -612,10 +612,18 @@ async function cmdAdd(argv: string[]) {
 
 async function cmdAddSkill(argv: string[]) {
   const { addSkillRepos } = await import("../src/skills.ts");
+  const { isSafeRepoSlug } = await import("../src/plugins/shell.ts");
   const { listAgentIds } = await import("../src/sync.ts");
   const { values, positionals } = parse(argv);
   if (positionals.length === 0) {
     console.error(red("add skill: name at least one repo (e.g. vercel-labs/agent-skills)"));
+    process.exit(2);
+  }
+  // Reject bad slugs up front — addSkillRepos silently drops them, which would
+  // otherwise look like a clean no-op (exit 0) when nothing was added.
+  const badSlugs = positionals.filter((p) => !isSafeRepoSlug(p));
+  if (badSlugs.length) {
+    console.error(red(`add skill: not a valid owner/repo slug: ${badSlugs.join(", ")}`));
     process.exit(2);
   }
   const agents = resolveAgentScope(values, [...listAgentIds(), "pi"] as AgentId[], "add skill");
