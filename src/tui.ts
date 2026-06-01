@@ -152,6 +152,10 @@ async function doMirror() {
   if (sc.supported && (sc.report?.sources.length ?? 0) > 0) {
     log.info(`skills → ${sc.agents.length} non-plugin agents: ${sc.report!.sources.length} source repo(s)`);
   }
+  const mc = preview.mcpCohort;
+  if (mc.supported && mc.servers.length > 0) {
+    log.info(`mcp → ${mc.agents.length} non-plugin agents: ${mc.servers.length} bundled server(s) (additive)`);
+  }
   const confirm = await select({
     message: `apply mirror from ${primary} → every other agent? (additive — never uninstalls)`,
     options: [
@@ -204,6 +208,11 @@ async function doMirror() {
   for (const res of applied.skillCohort.report?.results ?? []) {
     if (res.status === "failed") failed += 1;
     else if (res.status === "added") added += 1;
+  }
+  if (!applied.mcpCohort.supported && applied.mcpCohort.reason) skipped += 1;
+  for (const res of applied.mcpCohort.results ?? []) {
+    if (res.status === "failed") failed += 1;
+    else added += res.added.length; // count lifted servers, not agents
   }
 
   const summary = [

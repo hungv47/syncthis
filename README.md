@@ -15,7 +15,7 @@ Every coding agent stores its MCP servers in its own file, its own format, its o
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
 - **MCP servers** — union sync across all 11 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
-- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **8 non-plugin agents** get the bundled skills via `npx skills add`. Anything a target can't load as a plugin falls back to skills.
+- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **8 non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
 Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total.
@@ -178,7 +178,7 @@ Plugins aren't config records like MCP servers — they're installed artifact bu
 
 - **Codex** consumes plugins natively (`codex plugin add`). syncthis installs each missing plugin and, by default, registers any marketplace Codex lacks first.
 - **Cursor** has no list CLI, so it's a **write-only** target: pushed by source repo (`npx plugins add <repo> --target cursor`), additive, from a Claude primary only.
-- **The other 8 agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`.
+- **The other 8 agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`, **and** the plugins' bundled **MCP servers**, decomposed and lifted into each agent's own MCP config (additive; `${CLAUDE_PLUGIN_ROOT}` resolved to the install dir; a name already present with a different config is left untouched). The plugin cohort already gets those servers by installing the plugin.
 
 ```bash
 # See what's installed where (read-only)

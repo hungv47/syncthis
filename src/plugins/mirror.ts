@@ -10,12 +10,16 @@
 //   • Cursor (write-only plugin target, no list CLI): pushed by source repo via
 //     `npx plugins add <repo> --target cursor` — additive, can't be diffed.
 //   • The non-plugin agents (gemini, kimi, opencode, …): receive the primary's
-//     plugin-bundled skills via `npx skills add` (vercel-labs/skills).
+//     plugin-bundled skills via `npx skills add` (vercel-labs/skills) AND the
+//     primary's plugin-bundled MCP servers, lifted into their own MCP config (the
+//     plugin cohort already gets those by installing the plugin).
 //
 // It is additive only: there is no uninstall path anywhere. A mirror can add a
-// plugin/skill to an agent, never remove one — so a mistake can't wipe plugins.
+// plugin/skill/MCP server to an agent, never remove one — so a mistake can't wipe
+// plugins, and a name that already exists with a different config is left untouched.
 
 import { pluginAdapters } from "./index.ts";
+import { resolvePluginMcpServers, type PluginMcpServer, type PluginMcpSkip } from "./mcp.ts";
 import { isSafeRepoSlug, run } from "./shell.ts";
 import type {
   PluginAdapter,
@@ -31,7 +35,8 @@ import {
   skillCohort,
   type PluginSkillsReport,
 } from "../skills.ts";
-import type { AgentId } from "../types.ts";
+import { diffServers, findAdapter } from "../sync.ts";
+import type { AgentId, McpServer, SyncStatus } from "../types.ts";
 
 const CURSOR_PLUGINS_TIMEOUT_MS = 180_000;
 
@@ -75,12 +80,35 @@ export type MirrorSkillCohort = {
   report?: PluginSkillsReport;
 };
 
+// The non-plugin agents' bundled-MCP push. Driven from the primary's plugin-bundled
+// MCP servers (only a Claude primary can supply them). `servers` is the resolved set
+// (preview); `results` carries the per-agent additive write outcome (apply). Additive
+// and conflict-safe: a server name already present with a different config is left
+// untouched and surfaced as a conflict.
+export type McpCohortResult = {
+  agent: AgentId;
+  added: string[];
+  conflicts: string[];
+  status: SyncStatus;
+  message?: string;
+};
+
+export type MirrorMcpCohort = {
+  supported: boolean;
+  reason?: string;
+  agents: AgentId[];
+  servers: PluginMcpServer[];
+  skipped: PluginMcpSkip[];
+  results?: McpCohortResult[];
+};
+
 export type MirrorReport = {
   from: AgentId;
   fromRead: PluginAdapterRead;
   targets: MirrorTarget[];
   cursor: CursorPush;
   skillCohort: MirrorSkillCohort;
+  mcpCohort: MirrorMcpCohort;
   applied: boolean;
 };
 
@@ -211,8 +239,17 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
 
   const cursor = await pushToCursor(fromRead, sources, opts.apply, opts.onProgress);
   const skillCohortPush = await pushToSkillCohort(opts.from, opts.apply, opts.onProgress);
+  const mcpCohortPush = await pushPluginMcpToCohort(opts.from, fromRead.plugins, opts.apply, opts.onProgress);
 
-  return { from: opts.from, fromRead, targets, cursor, skillCohort: skillCohortPush, applied: opts.apply };
+  return {
+    from: opts.from,
+    fromRead,
+    targets,
+    cursor,
+    skillCohort: skillCohortPush,
+    mcpCohort: mcpCohortPush,
+    applied: opts.apply,
+  };
 }
 
 // Install the primary's plugins onto Cursor by source repo. Cursor has no
@@ -307,11 +344,88 @@ async function pushToSkillCohort(
   return { supported: true, agents, report };
 }
 
+// Lift the primary's plugin-bundled MCP servers into the non-plugin agents' own MCP
+// config. The plugin cohort (Claude/Codex/Cursor) already gets these by installing
+// the plugin, so the target set is the skill cohort (the 8 non-plugin agents). Source
+// paths come from Claude's plugin store, so only a Claude primary can supply them.
+// Additive and conflict-safe: each agent keeps every server it already has; a name
+// present with a DIFFERENT config is left untouched and reported as a conflict
+// (sacred conflict policy), never overwritten.
+async function pushPluginMcpToCohort(
+  from: AgentId,
+  plugins: PluginRecord[],
+  apply: boolean,
+  onProgress?: (label: string, index: number, total: number) => void,
+): Promise<MirrorMcpCohort> {
+  const agents = skillCohort();
+  if (from !== "claude-code") {
+    return {
+      supported: false,
+      reason: "plugin MCP decomposition reads Claude's installed plugins — run `syncthis mirror claude-code`",
+      agents,
+      servers: [],
+      skipped: [],
+    };
+  }
+  const { servers, skipped } = await resolvePluginMcpServers(plugins);
+  if (!apply || servers.length === 0) {
+    return { supported: true, agents, servers, skipped };
+  }
+
+  const serverMap: Record<string, McpServer> = {};
+  for (const s of servers) serverMap[s.name] = s.server;
+
+  const results: McpCohortResult[] = [];
+  let i = 0;
+  for (const agentId of agents) {
+    i += 1;
+    onProgress?.(`mcp→${agentId}`, i, agents.length);
+    const adapter = findAdapter(agentId);
+    if (!adapter) {
+      results.push({ agent: agentId, added: [], conflicts: [], status: "skipped", message: "no MCP adapter" });
+      continue;
+    }
+    const read = await adapter.read();
+    if (read.error) {
+      results.push({ agent: agentId, added: [], conflicts: [], status: "failed", message: read.error });
+      continue;
+    }
+    // diff(plugin servers → agent's current): `add` = not yet present; `overwrite` =
+    // present with a different config = a conflict we must NOT touch.
+    const diff = diffServers(serverMap, read.servers);
+    if (diff.add.length === 0) {
+      results.push({
+        agent: agentId,
+        added: [],
+        conflicts: diff.overwrite,
+        status: "skipped",
+        message: diff.overwrite.length ? "conflict(s) left untouched" : "already present",
+      });
+      continue;
+    }
+    // Merge additively: keep every existing server (conflicting names retain the
+    // agent's own value), add only the new ones.
+    const next: Record<string, McpServer> = { ...read.servers };
+    for (const name of diff.add) next[name] = serverMap[name]!;
+    const write = await adapter.write(next, { dryRun: false });
+    results.push({
+      agent: agentId,
+      added: diff.add,
+      conflicts: diff.overwrite,
+      status: write.status,
+      message: write.message,
+    });
+  }
+  return { supported: true, agents, servers, skipped, results };
+}
+
 export function mirrorHasChanges(report: MirrorReport): boolean {
   const skillSources = report.skillCohort.supported ? report.skillCohort.report?.sources.length ?? 0 : 0;
+  const mcpServers = report.mcpCohort.supported ? report.mcpCohort.servers.length : 0;
   return (
     report.targets.some((t) => t.diff && t.diff.add.length > 0) ||
     report.cursor.repos.length > 0 ||
-    skillSources > 0
+    skillSources > 0 ||
+    mcpServers > 0
   );
 }

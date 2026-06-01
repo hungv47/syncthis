@@ -35,9 +35,11 @@ usage:
                                              every other agent. Codex gets native plugins (missing
                                              marketplaces are registered automatically); Cursor is
                                              pushed via \`npx plugins --target cursor\`; the 8 non-plugin
-                                             agents get the bundled skills via \`npx skills add\`.
-                                             Anything Codex can't load as a plugin falls back to skills.
-                                             Never uninstalls. --no-provision skips network registration.
+                                             agents get the bundled skills via \`npx skills add\` AND the
+                                             bundled MCP servers lifted into their MCP config (additive,
+                                             conflicts left untouched). Anything Codex can't load as a
+                                             plugin falls back to skills. Never uninstalls.
+                                             --no-provision skips network registration.
   syncthis plugin list                       list installed plugins per agent (read-only)
   syncthis help
 
@@ -239,6 +241,27 @@ function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) 
   }
   printCursorPush(r.cursor);
   printSkillCohortPreview(r.skillCohort);
+  printMcpCohortPreview(r.mcpCohort);
+}
+
+function printMcpCohortPreview(m: import("../src/plugins/mirror.ts").MirrorMcpCohort) {
+  const label = "mcp→agents";
+  if (!m.supported) {
+    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(m.reason ?? "unsupported")}`);
+    return;
+  }
+  if (m.servers.length === 0) {
+    const why = m.skipped.length
+      ? `no portable MCP servers (${m.skipped.length} skipped)`
+      : "no plugin-bundled MCP servers to surface";
+    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(why)}`);
+    return;
+  }
+  console.log(
+    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${m.servers.length} ${dim(`server(s) → ${m.agents.length} non-plugin agents (lifted from plugins; additive, conflicts left untouched)`)}`,
+  );
+  for (const s of m.servers) console.log(`      ${green("+")} ${s.name} ${dim(`(from ${s.plugin})`)}`);
+  for (const sk of m.skipped) console.log(`      ${dim("·")} ${dim(`${sk.name} skipped — ${sk.reason}`)}`);
 }
 
 function printSkillCohortPreview(s: import("../src/plugins/mirror.ts").MirrorSkillCohort) {
@@ -350,6 +373,29 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport, 
         row("synced", "skills→agents", res.repo, `added to ${r.skillCohort.agents.length} non-plugin agents`);
       }
       // "skipped" (already synced / no skills) is the common, quiet case — omit.
+    }
+  }
+  // Plugin-bundled MCP servers lifted into the non-plugin agents.
+  if (!r.mcpCohort.supported) {
+    if (r.mcpCohort.reason) {
+      skipped += 1;
+      row("skipped", "mcp→agents", "", r.mcpCohort.reason);
+    }
+  } else {
+    for (const res of r.mcpCohort.results ?? []) {
+      if (res.status === "failed") {
+        failed += 1;
+        row("failed", res.agent, "", `mcp: ${res.message ?? "failed"}`);
+      } else if (res.added.length) {
+        installed += res.added.length;
+        row("synced", res.agent, "", `+${res.added.length} mcp: ${res.added.join(", ")}`);
+      }
+      // A name already present with a different config is left untouched — surface
+      // it so the user can resolve it (same policy as union sync), but it's not a
+      // failure and doesn't block.
+      if (res.conflicts.length) {
+        row("drift", res.agent, "", `${res.conflicts.length} conflict(s) left untouched: ${res.conflicts.join(", ")}`);
+      }
     }
   }
   const parts = [

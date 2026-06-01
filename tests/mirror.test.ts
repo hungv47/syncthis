@@ -4,6 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMirror, mirrorHasChanges } from "../src/plugins/mirror.ts";
 
+// Materialize a plugin install dir with a bundled .mcp.json, return the path to use
+// as the plugin's `installPath` in the fake `claude plugin list` output.
+async function materializePluginMcp(name: string, mcpServers: Record<string, unknown>): Promise<string> {
+  const dir = join(workDir, "plugin-cache", name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, ".mcp.json"), JSON.stringify({ mcpServers }));
+  return dir;
+}
+
 let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
@@ -192,5 +201,62 @@ describe("runMirror — cross-agent marketplace tags (regression)", () => {
     const invocations = await readInvocations();
     expect(invocations.some((l) => l.trim() === "codex plugin add -- vercel@plugins-cli")).toBe(true);
     expect(invocations.some((l) => /vercel@claude-mkt/.test(l))).toBe(false);
+  });
+});
+
+describe("runMirror — plugin MCP decomposition", () => {
+  test("preview surfaces a plugin's bundled MCP servers to the non-plugin cohort", async () => {
+    const cacheDir = await materializePluginMcp("db", {
+      db: { command: "${CLAUDE_PLUGIN_ROOT}/bin/db", args: ["--port", "5432"] },
+    });
+    await installFakeCli("claude", JSON.stringify([{ id: "db@mkt", enabled: true, installPath: cacheDir }]));
+    await installFakeCli("codex", "");
+
+    const report = await runMirror({ from: "claude-code", apply: false });
+    expect(report.mcpCohort.supported).toBe(true);
+    expect(report.mcpCohort.agents.length).toBe(8); // the 8 non-plugin agents
+    expect(report.mcpCohort.servers.map((s) => s.name)).toEqual(["db"]);
+    expect((report.mcpCohort.servers[0]!.server as { command: string }).command).toBe(join(cacheDir, "bin/db"));
+    expect(mirrorHasChanges(report)).toBe(true);
+  });
+
+  test("a Codex primary can't supply plugin MCP (Claude-store only)", async () => {
+    await installFakeCli("claude", "");
+    await installFakeCli("codex", codexInstalled("some@plugins-cli"));
+    const report = await runMirror({ from: "codex", apply: false });
+    expect(report.mcpCohort.supported).toBe(false);
+    expect(report.mcpCohort.reason).toMatch(/Claude/);
+  });
+
+  test("apply is additive and conflict-safe per agent", async () => {
+    // Pre-seed gemini with its own `db` (a CONFLICT — different config) and a `keep`
+    // server. The plugin provides `db` (must be left untouched) and `extra` (added).
+    const geminiPath = join(workDir, ".gemini", "settings.json");
+    await mkdir(join(geminiPath, ".."), { recursive: true });
+    await writeFile(
+      geminiPath,
+      JSON.stringify({ mcpServers: { db: { command: "agent-db" }, keep: { command: "keep-cmd" } } }),
+    );
+
+    const cacheDir = await materializePluginMcp("p", {
+      db: { command: "${CLAUDE_PLUGIN_ROOT}/bin/db" },
+      extra: { command: "extra-cmd" },
+    });
+    await installFakeCli("claude", JSON.stringify([{ id: "p@mkt", enabled: true, installPath: cacheDir }]));
+    await installFakeCli("codex", "");
+
+    // provision:false keeps the run offline (no `npx plugins` / network).
+    const report = await runMirror({ from: "claude-code", apply: true, provision: false });
+
+    const gemini = report.mcpCohort.results!.find((r) => r.agent === "gemini-cli")!;
+    expect(gemini.added).toEqual(["extra"]);
+    expect(gemini.conflicts).toEqual(["db"]);
+
+    const written = JSON.parse(await readFile(geminiPath, "utf8")) as {
+      mcpServers: Record<string, { command: string }>;
+    };
+    expect(written.mcpServers.keep!.command).toBe("keep-cmd"); // existing untouched
+    expect(written.mcpServers.db!.command).toBe("agent-db"); // conflict left untouched
+    expect(written.mcpServers.extra!.command).toBe("extra-cmd"); // new server added
   });
 });
