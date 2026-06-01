@@ -404,12 +404,16 @@ export type SkillRemoveResult = {
   message?: string;
 };
 
-// `npx skills remove -g -a <agent>… -s <name>… -y` — remove the named skills from
-// each named agent, globally, non-interactively. Both flags are variadic in the
-// skills CLI (`--agent claude-code cursor`, `--skill pr-review commit`); `-s` is
-// placed last so the trailing `-y` flag terminates its value list.
+// `npx skills remove -g -a <agent> … -s <name> … -y` — remove the named skills from
+// each named agent, globally, non-interactively. Uses the repeated-flag form (one
+// `-a`/`-s` per value), matching `addArgs` — the convention already exercised in
+// production by the mirror — rather than packing values into a single variadic flag.
 export function removeArgs(names: string[], agents: readonly AgentId[]): string[] {
-  return ["-y", "skills", "remove", "-g", "-a", ...agents, "-s", ...names, "-y"];
+  const args = ["-y", "skills", "remove", "-g"];
+  for (const a of agents) args.push("-a", a);
+  for (const n of names) args.push("-s", n);
+  args.push("-y");
+  return args;
 }
 
 function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRemoveResult> {

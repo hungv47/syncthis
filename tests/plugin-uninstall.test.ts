@@ -212,9 +212,9 @@ describe("codex uninstallPlugin", () => {
 });
 
 describe("removeArgs", () => {
-  test("builds `skills remove -g -a <agents> -s <names> -y`", () => {
+  test("builds `skills remove -g -a <agent>… -s <name>… -y` (repeated-flag form)", () => {
     expect(removeArgs(["alpha", "beta"], ["gemini-cli", "opencode"])).toEqual([
-      "-y", "skills", "remove", "-g", "-a", "gemini-cli", "opencode", "-s", "alpha", "beta", "-y",
+      "-y", "skills", "remove", "-g", "-a", "gemini-cli", "-a", "opencode", "-s", "alpha", "-s", "beta", "-y",
     ]);
   });
 });
@@ -238,7 +238,7 @@ describe("removeSkillNames", () => {
     await installFakeNpx({ removeExit: 0 });
     const r = await removeSkillNames(["alpha"], ["gemini-cli", "opencode"]);
     expect(r.status).toBe("removed");
-    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a gemini-cli opencode -s alpha -y")).toBe(true);
+    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a gemini-cli -a opencode -s alpha -y")).toBe(true);
   });
 
   test("a 'no matching skills' exit is a benign skip", async () => {
@@ -308,7 +308,7 @@ describe("runPluginUninstall (orchestrator)", () => {
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === "claude plugin uninstall --yes -- foo@mkt")).toBe(true);
     expect(inv.some((l) => l.trim() === "codex plugin remove -- foo@mkt")).toBe(true);
-    expect(inv.some((l) => l.trim() === "npx -y skills remove -g -a gemini-cli opencode -s alpha -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "npx -y skills remove -g -a gemini-cli -a opencode -s alpha -y")).toBe(true);
   });
 
   test("scoping to only plugin agents removes no skills", async () => {
@@ -364,7 +364,7 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.native.find((t) => t.agent === "codex")?.present).toBe(false); // not native on codex
     expect(r.skills.agents).toEqual(["codex", "opencode"]);
     expect(r.skillResult?.status).toBe("removed");
-    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a codex opencode -s alpha -y")).toBe(true);
+    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a codex -a opencode -s alpha -y")).toBe(true);
   });
 
   // Regression (review P2/finding 3): the SKILL.md frontmatter name can differ from

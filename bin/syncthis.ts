@@ -520,11 +520,13 @@ async function cmdPluginRemove(argv: string[]) {
   // The apply phase re-reads Claude; if that read fails now (even though the preview's
   // succeeded), skill names couldn't be resolved and skill removal was dropped. Surface
   // it loudly instead of letting the apply look clean.
+  // Base the exit on the APPLY outcome, not the stale preview `skillBlocked` — a
+  // preview that couldn't read Claude but an apply that then succeeded is a success.
   const appliedBlocked = !!applied.claudeReadError && applied.skillScope.length > 0;
   if (appliedBlocked) {
     console.error(red(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.skillScope.join(", ")} were NOT removed; re-run once claude is available`));
   }
-  if (failed > 0 || skillBlocked || appliedBlocked) process.exit(1);
+  if (failed > 0 || appliedBlocked) process.exit(1);
 }
 
 async function cmdFanOut(argv: string[]) {
