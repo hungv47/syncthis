@@ -53,7 +53,8 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
 | ✅ mirrors plugin content to every agent (plugins on Codex/Cursor; skills on the rest) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
-| ✅ lists installed plugins per agent (`plugin list`) | ❌ uninstalls plugins (use `claude plugin uninstall`, `codex plugin remove`) |
+| ✅ shows a cross-agent plugin overview (`plugin list`) | ❌ acts as a plugin source-of-truth — each agent's own config is the truth |
+| ✅ uninstalls a plugin everywhere — native plugin + surfaced skills (`plugin rm`, guarded) | ❌ deletes anything implicitly — removal only via the guarded `rm` / `plugin rm` commands |
 
 ## How it works
 
@@ -69,7 +70,7 @@ syncthis run
 
 No config file, no source-of-truth to maintain. Each agent's own config is the truth; syncthis just keeps them in agreement.
 
-For removals, do not rely on union sync — it is additive only. Use the explicit `rm` commands (see below); otherwise a server or plugin that still exists in one agent will be re-propagated to the others on the next `run`.
+For removals, do not rely on union sync — it is additive only. Use the explicit `rm` / `plugin rm` commands (see below); otherwise a server or plugin that still exists in one agent will be re-propagated to the others on the next `run`.
 
 ## Commands
 
@@ -86,7 +87,9 @@ syncthis doctor                             # MCP coverage + conflict report
 
 # Plugins → every agent (Codex/Cursor as plugins; the other non-plugin agents get the skills). Additive.
 syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # propagate primary's plugin content to every agent
-syncthis plugin list                        # list installed plugins per agent (read-only)
+syncthis plugin list                        # cross-agent plugin overview (read-only)
+syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
+                                            # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
 syncthis help
 ```
 
@@ -184,16 +187,26 @@ Plugins aren't config records like MCP servers — they're installed artifact bu
 - **The other 8 agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`, **and** the plugins' bundled **MCP servers**, decomposed and lifted into each agent's own MCP config (additive; `${CLAUDE_PLUGIN_ROOT}` resolved to the install dir; a name already present with a different config is left untouched). The plugin cohort already gets those servers by installing the plugin.
 
 ```bash
-# See what's installed where (read-only)
+# See what's installed where (read-only): native plugins on Claude/Codex,
+# plus the plugin-derived skills surfaced on every non-plugin agent.
 syncthis plugin list
 
 # Make one agent the source of truth: propagate its plugins to every other agent
 syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
 syncthis mirror claude-code --no-provision --yes   # skip Codex marketplace registration + Codex skills-fallback
+
+# Uninstall a plugin everywhere — native plugin (claude/codex) AND its surfaced skills
+syncthis plugin rm forsvn-skills --all --dry-run   # preview the diff first
+syncthis plugin rm forsvn-skills --all --yes
+syncthis plugin rm forsvn-skills --agents codex,opencode,gemini-cli --yes
 ```
 
-`mirror` shows a diff and prompts for confirmation unless you pass `--yes`. It only ever **adds** — there is no plugin-uninstall path, so a mirror can never wipe an agent's plugins. Installs delegate to each target's native CLI; nothing is written directly to a plugin cache.
+`mirror` shows a diff and prompts for confirmation unless you pass `--yes`. It only ever **adds** — a mirror can never wipe an agent's plugins. Removal is a separate, explicit command (`plugin rm`, below). Installs delegate to each target's native CLI; nothing is written directly to a plugin cache.
+
+### Uninstalling — `plugin rm`
+
+`plugin rm <plugin…>` is the only plugin-removal path (sync and mirror never remove). For each named plugin it uninstalls the native plugin from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`). It's guarded like MCP `rm`: an explicit scope (`--all` or `--agents <a,b,c>`), a diff before any write, TTY-confirm or `--yes`, and `--dry-run`. A skill name another still-installed plugin also provides is **kept** (no collateral removal); `--keep-data` preserves Claude's plugin data dir. Cursor is write-only and can't be uninstalled. The interactive picker offers the same flow with plugin and agent checkboxes.
 
 `mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and resolves each plugin to the target's own `<name>@<marketplace>` automatically.
 

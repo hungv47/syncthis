@@ -40,7 +40,12 @@ usage:
                                              conflicts left untouched). Anything Codex can't load as a
                                              plugin falls back to skills. Never uninstalls.
                                              --no-provision skips network registration.
-  syncthis plugin list                       list installed plugins per agent (read-only)
+  syncthis plugin list                       overview of plugins across every agent (read-only)
+  syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
+                                             uninstall plugin(s): the native plugin from
+                                             claude-code/codex AND the surfaced skills from the
+                                             non-plugin agents (npx skills remove). Guarded:
+                                             explicit scope, diff, confirm/--yes, --dry-run.
   syncthis help
 
 what sync does:
@@ -63,7 +68,9 @@ agents supported for MCP sync (use these IDs with the directional command):
 flags:
   --dry-run       report what would change without writing.
   --no-skills     skip the skill update phase (sync/run only).
-  --all           required for fan-out and remove-all commands.
+  --all           required for fan-out, remove-all, and plugin-rm scope.
+  --agents <list> (plugin rm) comma-separated agents to uninstall from.
+  --keep-data     (plugin rm) keep claude's plugin data dir on uninstall.
   --yes           skip confirmation prompt for destructive commands.
   --no-provision  (mirror) don't register missing Codex marketplaces or fall
                   unloadable bundles back to skills — Codex installs only what it
@@ -100,6 +107,9 @@ const OPTIONS = {
   yes: { type: "boolean", short: "y" },
   all: { type: "boolean" },
   "no-provision": { type: "boolean" },
+  // `plugin rm` scope + behavior.
+  agents: { type: "string" },
+  "keep-data": { type: "boolean" },
 } as const;
 
 function parse(argv: string[]) {
@@ -419,17 +429,72 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport, 
 async function cmdPlugin(argv: string[]) {
   const sub = argv[0];
   if (!sub || sub === "list") return cmdPluginList();
+  if (sub === "rm" || sub === "remove" || sub === "uninstall") return cmdPluginRemove(argv.slice(1));
   if (sub === "help" || sub === "-h" || sub === "--help") {
-    console.log("syncthis plugin list — list installed plugins per agent (claude-code, codex). read-only.");
+    console.log(
+      "syncthis plugin list                 — overview of plugins across every agent (read-only)\n" +
+        "syncthis plugin rm <plugin…> --all   — uninstall plugin(s) everywhere (native plugin on\n" +
+        "                                       claude-code/codex + surfaced skills on the rest)\n" +
+        "syncthis plugin rm <plugin…> --agents <a,b,c>\n" +
+        "                                     — uninstall only from the named agents\n" +
+        "  flags: --dry-run (preview), --yes (skip confirm), --keep-data (claude: keep plugin data dir)",
+    );
     return;
   }
-  console.error(red(`unknown plugin subcommand: ${sub}. only \`plugin list\` is supported.`));
+  console.error(red(`unknown plugin subcommand: ${sub}. use \`plugin list\` or \`plugin rm\`.`));
   process.exit(2);
 }
 
 async function cmdPluginList() {
-  const { listPlugins } = await import("../src/plugins/index.ts");
-  printPluginList(await listPlugins());
+  const { buildPluginOverview } = await import("../src/plugins/overview.ts");
+  printPluginOverview(await buildPluginOverview());
+}
+
+async function cmdPluginRemove(argv: string[]) {
+  const { runPluginUninstall, uninstallHasChanges } = await import("../src/plugins/uninstall.ts");
+  const { listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  const plugins = positionals;
+  if (plugins.length === 0) {
+    console.error(red("plugin rm: name at least one plugin to uninstall"));
+    process.exit(2);
+  }
+  // The full agent universe: MCP-syncable agents + skills-only agents (Pi).
+  const known = [...listAgentIds(), "pi"] as AgentId[];
+  let agents: AgentId[];
+  if (values.all) {
+    agents = known;
+  } else if (typeof values.agents === "string" && values.agents.trim()) {
+    const wanted = values.agents.split(",").map((s) => s.trim()).filter(Boolean);
+    const bad = wanted.filter((a) => !known.includes(a as AgentId));
+    if (bad.length) {
+      console.error(red(`unknown agent(s): ${bad.join(", ")}`));
+      console.error(dim(`known agents: ${known.join(", ")}`));
+      process.exit(2);
+    }
+    agents = wanted as AgentId[];
+  } else {
+    console.error(red("plugin rm requires an explicit scope: --all or --agents <a,b,c>"));
+    process.exit(2);
+  }
+  const keepData = !!values["keep-data"];
+
+  const dryRun = !!values["dry-run"];
+  const preview = await runPluginUninstall({ plugins, agents, apply: false, keepData });
+  printUninstallPreview(preview);
+  if (!uninstallHasChanges(preview)) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    console.log(dim("dry-run — no changes applied."));
+    return;
+  }
+  await confirmDestructive(!!values.yes);
+  const onProgress = (label: string, i: number, total: number) =>
+    process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
+  const applied = await runPluginUninstall({ plugins, agents, apply: true, keepData, onProgress });
+  printUninstallApplied(applied);
 }
 
 async function cmdFanOut(argv: string[]) {
@@ -711,8 +776,10 @@ function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
   }
 }
 
-function printPluginList(reads: import("../src/plugins/types.ts").PluginAdapterRead[]) {
-  for (const r of reads) {
+function printPluginOverview(o: import("../src/plugins/overview.ts").PluginOverview) {
+  console.log("Plugins across your agents:\n");
+  // Native plugins on the plugin-capable agents (claude-code, codex).
+  for (const r of o.native) {
     if (r.error) {
       row("invalid", r.agent, r.configPath, r.error);
       continue;
@@ -729,6 +796,94 @@ function printPluginList(reads: import("../src/plugins/types.ts").PluginAdapterR
       console.log(`      ${dim("·")} ${p.name}${mkt}${ver}${enabled}`);
     }
   }
+  // Cursor is a plugin target but write-only — no list CLI to read.
+  row("missing", "cursor", "~/.cursor", "write-only plugin target — Cursor's plugin state isn't readable");
+
+  // The non-plugin agents: plugins reach them only as surfaced skills.
+  console.log(dim("\nplugin-derived skills (on agents that can't load plugins natively):"));
+  if (!o.skillsReadable) {
+    console.log(dim("  couldn't read `npx skills list` — derived-skill view unavailable"));
+    return;
+  }
+  if (o.derivedRepos.length === 0) {
+    console.log(dim("  none surfaced yet — run `syncthis mirror claude-code` to push plugin skills to other agents"));
+    return;
+  }
+  console.log(dim(`  source repos: ${o.derivedRepos.join(", ")}`));
+  const union = new Set<string>();
+  for (const d of o.derived) for (const s of d.skills) union.add(s.name);
+  if (union.size) console.log(dim(`  skills: ${[...union].sort().join(", ")}`));
+  for (const d of o.derived) {
+    const glyph = d.skills.length ? green("✓") : dim("·");
+    console.log(`  ${glyph} ${d.agent.padEnd(14)} ${d.skills.length} skill(s)`);
+  }
+}
+
+function printUninstallPreview(r: import("../src/plugins/uninstall.ts").UninstallReport) {
+  console.log(`Uninstall ${r.plugins.map((p) => green(p)).join(", ")}:`);
+  for (const t of r.native) {
+    const target = t.marketplace ? `${t.plugin}@${t.marketplace}` : t.plugin;
+    if (t.unreadable) row("invalid", t.agent, "", `can't read plugins: ${t.unreadable}`);
+    else if (t.present) console.log(`  ${red("-")} ${t.agent.padEnd(14)} ${target} ${dim("(native plugin)")}`);
+    else console.log(`  ${dim("·")} ${t.agent.padEnd(14)} ${dim(`${target} not installed`)}`);
+  }
+  if (r.skills.names.length && r.skills.agents.length) {
+    console.log(
+      `  ${red("-")} ${"skills".padEnd(14)} ${red(`${r.skills.names.length}`)} skill(s) from ${r.skills.agents.length} non-plugin agent(s)`,
+    );
+    console.log(`      ${dim(`names:  ${r.skills.names.join(", ")}`)}`);
+    console.log(`      ${dim(`agents: ${r.skills.agents.join(", ")}`)}`);
+  } else if (r.skills.names.length) {
+    console.log(`  ${dim("·")} ${"skills".padEnd(14)} ${dim("derived skills exist, but none of the scoped agents hold them")}`);
+  }
+  if (r.skills.kept.length) {
+    console.log(dim(`  kept (still provided by another installed plugin): ${r.skills.kept.join(", ")}`));
+  }
+  for (const a of r.unsupportedAgents) {
+    console.log(`  ${dim("·")} ${a.padEnd(14)} ${dim("can't uninstall here (write-only plugin target, no list/uninstall CLI)")}`);
+  }
+}
+
+function printUninstallApplied(r: import("../src/plugins/uninstall.ts").UninstallReport) {
+  let removed = 0;
+  let absent = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const res of r.nativeResults ?? []) {
+    if (res.status === "uninstalled") {
+      removed += 1;
+      row("synced", res.agent, res.target, "uninstalled");
+    } else if (res.status === "absent") {
+      absent += 1; // quiet — nothing was there
+    } else if (res.status === "skipped") {
+      skipped += 1;
+      row("skipped", res.agent, res.target, res.message);
+    } else {
+      failed += 1;
+      row("failed", res.agent, res.target, res.message);
+    }
+  }
+  if (r.skillResult) {
+    const sr = r.skillResult;
+    if (sr.status === "removed") {
+      removed += sr.skills.length;
+      row("synced", "skills", "", `removed ${sr.skills.length} skill(s) from ${sr.agents.length} agent(s)`);
+    } else if (sr.status === "skipped") {
+      skipped += 1;
+      row("skipped", "skills", "", sr.message);
+    } else {
+      failed += 1;
+      row("failed", "skills", "", sr.message);
+    }
+  }
+  const parts = [
+    removed ? green(`${removed} removed`) : "",
+    absent ? dim(`${absent} absent`) : "",
+    skipped ? dim(`${skipped} skipped`) : "",
+    failed ? red(`${failed} failed`) : "",
+  ].filter(Boolean);
+  if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
+  if (failed > 0) process.exit(1);
 }
 
 function exitIfFailed(writes: { status: RowStatus }[]) {

@@ -1,8 +1,11 @@
-import { intro, outro, select, isCancel, cancel, log, note, spinner } from "@clack/prompts";
+import { intro, outro, select, multiselect, isCancel, cancel, log, note, spinner } from "@clack/prompts";
 import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import { runMirror, mirrorHasChanges } from "./plugins/mirror.ts";
 import { listPlugins, pluginAdapters } from "./plugins/index.ts";
+import { buildPluginOverview } from "./plugins/overview.ts";
+import { runPluginUninstall, uninstallHasChanges } from "./plugins/uninstall.ts";
+import { skillCohort } from "./skills.ts";
 import type { AgentId } from "./types.ts";
 
 type PickerChoice =
@@ -13,6 +16,7 @@ type PickerChoice =
   | "directional"
   | "doctor"
   | "plugin-list"
+  | "plugin-uninstall"
   | "quit";
 
 export async function showInteractivePicker(): Promise<void> {
@@ -32,7 +36,8 @@ export async function showInteractivePicker(): Promise<void> {
     { value: "skills", label: "Skills only", hint: "refresh skills via npx skills update" },
     { value: "directional", label: "Copy MCP from one agent to another  (advanced)", hint: "overwrites the destination — shows a diff, asks first" },
     { value: "doctor", label: "Check for problems", hint: "coverage + conflicts (read-only)" },
-    { value: "plugin-list", label: "List installed plugins", hint: "what's installed per agent (read-only)" },
+    { value: "plugin-list", label: "List installed plugins", hint: "overview across every agent (read-only)" },
+    { value: "plugin-uninstall", label: "Uninstall plugins", hint: "remove plugin(s) + their surfaced skills from agents you pick" },
     { value: "quit", label: "Quit", hint: "" },
   ];
   const choice = (await select({
@@ -68,6 +73,9 @@ export async function showInteractivePicker(): Promise<void> {
         break;
       case "plugin-list":
         await doPluginList();
+        break;
+      case "plugin-uninstall":
+        await doPluginUninstall();
         break;
     }
   } catch (err) {
@@ -239,12 +247,99 @@ async function doDoctor() {
 }
 
 async function doPluginList() {
-  const reads = await listPlugins();
-  for (const r of reads) {
+  const o = await buildPluginOverview();
+  for (const r of o.native) {
     if (r.error) log.error(`${r.agent}: ${r.error}`);
     else if (!r.exists) log.info(`${r.agent}: no config`);
-    else log.success(`${r.agent}: ${r.plugins.length} plugin(s)`);
+    else log.success(`${r.agent}: ${r.plugins.length} plugin(s) — ${r.plugins.map((p) => p.name).join(", ") || "none"}`);
   }
+  log.info("cursor: write-only plugin target — not readable");
+  if (!o.skillsReadable) {
+    log.warn("plugin-derived skills: `npx skills list` unavailable");
+    return;
+  }
+  if (o.derivedRepos.length === 0) {
+    log.info("plugin-derived skills: none surfaced yet (run the mirror)");
+    return;
+  }
+  const lines = o.derived.map((d) => `${d.agent}: ${d.skills.length}`).join("  ");
+  log.info(`plugin-derived skills (from ${o.derivedRepos.join(", ")}):\n${lines}`);
+}
+
+async function doPluginUninstall() {
+  // Candidate plugins = the native plugins installed on the plugin-capable agents.
+  const reads = await listPlugins();
+  const names = [...new Set(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name))))].sort();
+  if (names.length === 0) {
+    log.info("no plugins installed on claude-code or codex to uninstall.");
+    return;
+  }
+  const pickedRaw = await multiselect({
+    message: "which plugin(s) to uninstall? (space to toggle, enter to confirm)",
+    options: names.map((n) => ({ value: n, label: n })),
+    required: true,
+  });
+  if (isCancel(pickedRaw)) return cancel("aborted.");
+  const plugins = pickedRaw as string[];
+
+  // Actionable agents: the plugin-capable agents (native uninstall) + the skill
+  // cohort (surfaced-skill removal). Cursor can't be uninstalled, so it's omitted.
+  const agentChoices = [...new Set([...pluginAdapters.map((a) => a.id), ...skillCohort()])];
+  const agentsRaw = await multiselect({
+    message: "uninstall from which agents? (default: all)",
+    options: agentChoices.map((a) => ({ value: a, label: a })),
+    initialValues: agentChoices,
+    required: true,
+  });
+  if (isCancel(agentsRaw)) return cancel("aborted.");
+  const agents = agentsRaw as AgentId[];
+
+  const preview = await runPluginUninstall({ plugins, agents, apply: false });
+  if (!uninstallHasChanges(preview)) {
+    log.success("nothing to do — none of those plugins are installed on the chosen agents.");
+    return;
+  }
+  const nativeHits = preview.native.filter((t) => t.present).map((t) => `${t.agent}:${t.plugin}`);
+  if (nativeHits.length) log.info(`native plugin uninstall: ${nativeHits.join(", ")}`);
+  if (preview.skills.names.length && preview.skills.agents.length) {
+    log.info(`remove ${preview.skills.names.length} surfaced skill(s) from ${preview.skills.agents.length} agent(s): ${preview.skills.names.join(", ")}`);
+  }
+  if (preview.skills.kept.length) log.info(`keeping (still provided by another plugin): ${preview.skills.kept.join(", ")}`);
+
+  const confirm = await select({
+    message: "apply? this uninstalls plugins and removes their surfaced skills.",
+    options: [
+      { value: "no", label: "no" },
+      { value: "yes", label: "yes — uninstall" },
+    ],
+  });
+  if (isCancel(confirm) || confirm === "no") return cancel("aborted.");
+
+  const s = spinner();
+  s.start("Uninstalling…");
+  const applied = await runPluginUninstall({
+    plugins,
+    agents,
+    apply: true,
+    onProgress: (label, i, total) => s.message(`${label}  (${i}/${total})`),
+  }).catch((err) => {
+    s.stop("Uninstall failed.");
+    throw err;
+  });
+  s.stop("Uninstall applied.");
+
+  let removed = 0;
+  let failed = 0;
+  for (const res of applied.nativeResults ?? []) {
+    if (res.status === "uninstalled") removed += 1;
+    else if (res.status === "failed") failed += 1;
+  }
+  if (applied.skillResult) {
+    if (applied.skillResult.status === "removed") removed += applied.skillResult.skills.length;
+    else if (applied.skillResult.status === "failed") failed += 1;
+  }
+  if (failed > 0) log.error(`${removed} removed, ${failed} failed — run \`syncthis plugin rm\` for detail`);
+  else log.success(`uninstall complete: ${removed} removed.`);
 }
 
 async function doDirectional() {

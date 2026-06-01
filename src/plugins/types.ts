@@ -35,7 +35,30 @@ export type PluginInstallOpts = {
   sourceRepo?: string;
 };
 
+export type PluginUninstallOpts = {
+  dryRun: boolean;
+  // Disambiguate when the same plugin name is installed from more than one
+  // marketplace on the target. Optional — the adapter resolves it from the
+  // installed snapshot when there's only one.
+  marketplace?: string;
+  // Claude only: pass `--keep-data` so the plugin's persistent data dir survives
+  // the uninstall. Off by default (a plain uninstall removes data too).
+  keepData?: boolean;
+};
+
 export type InstallStatus = "installed" | "present" | "skipped" | "failed";
+
+// "absent" = the plugin wasn't installed on this agent, so nothing was removed (not
+// a failure). "skipped" = couldn't act unambiguously (e.g. installed under several
+// marketplaces — needs <name>@<marketplace>).
+export type UninstallStatus = "uninstalled" | "absent" | "skipped" | "failed";
+
+export type PluginUninstallResult = {
+  agent: AgentId;
+  target: string;
+  status: UninstallStatus;
+  message?: string;
+};
 
 export type PluginInstallResult = {
   agent: AgentId;
@@ -68,8 +91,12 @@ export interface PluginAdapter {
   // Returns null when the lookup failed (so callers can distinguish "couldn't read"
   // from "read fine, no github marketplaces" — an empty map).
   marketplaceSources?(): Promise<Map<string, string> | null>;
-  // Mirror layer: push the primary's plugins onto a target. Additive only — there
-  // is intentionally no removePlugin. syncthis never uninstalls a plugin (a mirror
-  // can only add), so a sync mistake can't wipe an agent's plugins.
+  // Mirror layer: push the primary's plugins onto a target. Additive only — a mirror
+  // (and union sync) can only add, never remove, so a sync mistake can't wipe an
+  // agent's plugins.
   installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult>;
+  // Guarded removal: uninstall a single plugin from this agent. NEVER reached by
+  // sync or mirror — only by the explicit `syncthis plugin rm` command, behind the
+  // same rails as MCP `rm` (explicit scope, diff, TTY-confirm or --yes, --dry-run).
+  uninstallPlugin(name: string, opts: PluginUninstallOpts): Promise<PluginUninstallResult>;
 }

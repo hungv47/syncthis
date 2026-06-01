@@ -2,6 +2,15 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`plugin rm` — guarded plugin uninstall.** The only plugin-removal path (sync and mirror stay additive). `syncthis plugin rm <plugin…>` uninstalls each named plugin's native install from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`) — the "everywhere" reach matching how `mirror` spreads a plugin's content. Guarded like MCP `rm`: explicit scope (`--all` or `--agents <a,b,c>`), a diff before any write, TTY-confirm or `--yes`, and `--dry-run`. Over-removal guard: a skill name another still-installed plugin also provides is **kept**. `--keep-data` preserves Claude's plugin data dir. The interactive picker gains a matching checkbox flow (pick plugins → pick agents → confirm).
+- **`plugin list` is now a cross-agent overview.** Previously it read only Claude and Codex. Now it also reports Cursor as a write-only target (not readable) and, from one `npx skills list -g --json`, the plugin-derived skills present on each non-plugin agent — the true "what plugin content do I have, everywhere" picture.
+
+### Changed
+- **`PluginAdapter` gained `uninstallPlugin`** (Claude, Codex). `skills.ts` gained `removeSkillNames`, `listInstalledSkills`, and `resolvePluginDerivedSkills`. Removal is now a documented, rail-guarded capability (sacred element #1 updated) — it was previously forbidden for plugins.
+
 ## [0.10.0] — 2026-06-01
 
 ### Added

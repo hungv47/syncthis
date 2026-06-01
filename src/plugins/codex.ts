@@ -6,6 +6,8 @@ import type {
   PluginInstallOpts,
   PluginInstallResult,
   PluginRecord,
+  PluginUninstallOpts,
+  PluginUninstallResult,
 } from "./types.ts";
 
 const CONFIG_PATH = "~/.codex/config.toml";
@@ -24,6 +26,10 @@ const PREFERRED_MARKETPLACE = "plugins-cli";
 // "no plugins" and silently skip everything. `codex plugin add` may fetch, so longer.
 const LIST_TIMEOUT_MS = 60_000;
 const ADD_TIMEOUT_MS = 180_000;
+// `codex plugin remove` only edits local config + prunes the cache — no fetch — so
+// it doesn't need the install path's long fetch headroom, but keep generous slack
+// over the cold-start default.
+const REMOVE_TIMEOUT_MS = 60_000;
 
 type CodexCols = { plugin: number; status: number; version: number; path: number };
 
@@ -314,5 +320,50 @@ export const codexPluginAdapter: PluginAdapter = {
       return { agent: "codex", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
     }
     return { agent: "codex", target, status: "installed" };
+  },
+
+  // Guarded uninstall — reached only by `syncthis plugin rm`. Reads install truth
+  // from `codex plugin list` first: an absent plugin is a no-op, and the installed
+  // marketplace is resolved from the snapshot (`codex plugin remove` needs
+  // <name>@<marketplace>, and the agent-local marketplace tag isn't known up front).
+  async uninstallPlugin(name: string, opts: PluginUninstallOpts): Promise<PluginUninstallResult> {
+    try {
+      assertSafeIdentifier(name, "plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "codex", target: name, status: "failed", message: (err as Error).message };
+    }
+
+    const listRes = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
+    if (listRes.notFound) return { agent: "codex", target: name, status: "failed", message: "codex CLI not found" };
+    const rows = listRes.ok ? parseCodexListRows(listRes.stdout || "") : [];
+
+    const installed = rows.filter(
+      (r) => r.installed && r.name === name && (!opts.marketplace || r.marketplace === opts.marketplace),
+    );
+    if (installed.length === 0) {
+      return { agent: "codex", target: opts.marketplace ? `${name}@${opts.marketplace}` : name, status: "absent" };
+    }
+
+    let marketplace = opts.marketplace;
+    if (!marketplace) {
+      const mkts = [...new Set(installed.map((r) => r.marketplace).filter((m): m is string => !!m))];
+      if (mkts.length === 1) marketplace = mkts[0];
+      else if (mkts.length > 1) {
+        return {
+          agent: "codex",
+          target: name,
+          status: "skipped",
+          message: `installed under multiple marketplaces (${mkts.join(", ")}) — pass <name>@<marketplace> to choose`,
+        };
+      }
+    }
+
+    const target = marketplace ? `${name}@${marketplace}` : name;
+    if (opts.dryRun) return { agent: "codex", target, status: "uninstalled", message: "dry-run" };
+    const res = await run("codex", ["plugin", "remove", "--", target], { timeoutMs: REMOVE_TIMEOUT_MS });
+    if (res.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
+    if (!res.ok) return { agent: "codex", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+    return { agent: "codex", target, status: "uninstalled" };
   },
 };

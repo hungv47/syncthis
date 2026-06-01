@@ -11,10 +11,10 @@ It is a sync layer, not an installer — it reads each agent's existing config, 
 
 It does exactly three things, deliberately kept minimal:
 - **MCP servers** — cross-agent union sync (the unique core; no upstream tool does this).
-- **Plugins** — `mirror` makes one agent's plugin content reachable on **every** other agent, additively. The full plugin cohort is **Claude Code, Codex, Cursor** (`npx plugins targets`): Claude ↔ Codex sync natively (each has a read+write `plugin` CLI); Cursor is a **write-only** target (no list CLI) fed via `npx plugins add <repo> --target cursor` from a Claude primary. The other 8 agents can't load plugins, so a Claude-primary mirror gives them the plugins' bundled *skills* via `npx skills add` **and** the plugins' bundled *MCP servers*, lifted into each agent's own MCP config (additive, conflict-safe — `src/plugins/mcp.ts`). Plus read-only `plugin list`. Additive only — mirror never uninstalls.
+- **Plugins** — `mirror` makes one agent's plugin content reachable on **every** other agent, additively. The full plugin cohort is **Claude Code, Codex, Cursor** (`npx plugins targets`): Claude ↔ Codex sync natively (each has a read+write `plugin` CLI); Cursor is a **write-only** target (no list CLI) fed via `npx plugins add <repo> --target cursor` from a Claude primary. The other 8 agents can't load plugins, so a Claude-primary mirror gives them the plugins' bundled *skills* via `npx skills add` **and** the plugins' bundled *MCP servers*, lifted into each agent's own MCP config (additive, conflict-safe — `src/plugins/mcp.ts`). The mirror is **additive only** — it never uninstalls. Two read/remove companions sit alongside it: `plugin list` (a read-only cross-agent overview — native plugins on Claude/Codex plus the plugin-derived skills surfaced on every non-plugin agent) and `plugin rm` (a **guarded** uninstall — see sacred element #1).
 - **Skills** — delegated to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills`, 55 agents). Two parts: `npx skills update -y` (refresh), and `skills from-plugins` — surface the skills *bundled inside* Claude plugins (which live in `~/.claude/plugins/marketplaces/*/skills`, not the skills dir) to the **8 non-plugin agents** via `npx skills add <repo>`. Plugin agents are intentionally excluded: they already have those skills as proper namespaced plugins, so re-adding them flat would duplicate and collide.
 
-A v0.4 plugin observability layer (`status`) and removal subsystem (`plugin rm` / `marketplace rm`) were removed in 0.5 — the observability premise (Codex silently drops nested-skill plugins) turned out fictional, and uninstalling is each agent's own concern. Don't reintroduce them without a concrete, verified need.
+History: a v0.4 plugin observability layer (`status`) plus a `plugin rm` / `marketplace rm` removal subsystem were removed in 0.5 — the observability premise (Codex silently drops nested-skill plugins) was fictional, and uninstalling was deemed each agent's concern. `plugin rm` was later reinstated by explicit request, but as a **plugin-aware, guarded** uninstall: it removes a plugin's native install from Claude/Codex **and** its surfaced skills from the non-plugin agents (`npx skills remove`), behind the same rails as MCP `rm` (explicit scope, diff, confirm/`--yes`, `--dry-run`). The `status` observability layer and `marketplace rm` stay out — don't reintroduce them without a concrete, verified need.
 
 Distribution: npm package `@hungv47/syncthis`.
 
@@ -47,14 +47,16 @@ src/
     text-mcp.ts       → shared text-format adapter factory
     index.ts          → MCP adapter registry (all 12)
   plugins/            → plugin layer (claude ↔ codex only)
-    claude.ts         → read (claude plugin list --json) + installPlugin (additive; no uninstall path)
-    codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace; provisions; detects covered/name-mismatch → skills fallback)
+    claude.ts         → read (claude plugin list --json) + installPlugin (additive) + uninstallPlugin (claude plugin uninstall)
+    codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace; provisions; detects covered/name-mismatch → skills fallback) + uninstallPlugin (codex plugin remove)
     mcp.ts            → plugin → MCP decomposition: read a plugin's bundled .mcp.json / manifest mcpServers, resolve ${CLAUDE_PLUGIN_ROOT} → install dir, skip servers needing a Claude-only var. Pure resolver (no writes).
     mirror.ts         → primary → every other agent: codex native installs (provision on by default) + cursor push (npx plugins) + skills fallback for bundles a target can't load + skills→8 non-plugin agents (npx skills) + bundled-MCP→8 non-plugin agents (lifted into their MCP config, additive + conflict-safe). Additive only — no removes.
-    shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeRepoSlug
-    types.ts          → PluginAdapter interface (install only) + records
+    overview.ts       → unified cross-agent plugin overview (buildPluginOverview): native plugins (claude/codex) + cursor write-only note + per-non-plugin-agent plugin-derived skills (skills list ∩ derived names). Read-only.
+    uninstall.ts      → guarded plugin uninstall (runPluginUninstall): native uninstall on claude/codex + surfaced-skill removal across the scoped skill-cohort agents. Over-removal guard: a skill another installed plugin still provides is kept. Preview/apply; never reached by sync or mirror.
+    shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeSkillName, isSafeRepoSlug
+    types.ts          → PluginAdapter interface (installPlugin + uninstallPlugin) + records
     index.ts          → plugin adapter registry ([claude, codex]) + listPlugins()
-  skills.ts           → surface plugin-bundled skills to the non-plugin agents via `npx skills add`. Two cohorts: `mcpCohort()` = MCP adapters − plugin cohort (targets for plugin→MCP decomposition); `skillCohort()` = mcpCohort + SKILL_ONLY_AGENTS (skills-capable agents with no MCP adapter, e.g. Pi). `addSkillRepos` adds specific repos to specific agents (used by mirror's skills fallback + non-plugin cohort push)
+  skills.ts           → surface plugin-bundled skills to the non-plugin agents via `npx skills add`. Two cohorts: `mcpCohort()` = MCP adapters − plugin cohort (targets for plugin→MCP decomposition); `skillCohort()` = mcpCohort + SKILL_ONLY_AGENTS (skills-capable agents with no MCP adapter, e.g. Pi). `addSkillRepos` adds specific repos to specific agents (used by mirror's skills fallback + non-plugin cohort push); `removeSkillNames` removes named skills (used by `plugin rm`); `listInstalledSkills`/`resolvePluginDerivedSkills` feed the overview
   sync.ts             → core: read all → compute union → write back, plus runDirectional / runFanOut / runRemove
   doctor.ts           → MCP coverage + conflict report
   tui.ts              → interactive picker (@clack/prompts)
@@ -65,7 +67,7 @@ bin/
   syncthis.ts         → CLI entrypoint (dev: run by bun; bundled to dist/ for release)
 scripts/
   build.ts            → bun build --target=node → dist/syncthis.mjs (node shebang, self-contained)
-tests/                → sync, adapters, mirror, plugin-adapters, plugin-install, io, skills
+tests/                → sync, adapters, mirror, plugin-adapters, plugin-install, plugin-uninstall, plugin-overview, io, skills
 .deepsec/             → self-contained deepsec scanner config (its own package.json + lockfile)
 ```
 
@@ -83,7 +85,9 @@ syncthis from <agent> --all [--yes] [--dry-run]   # fan one agent out to all oth
 syncthis rm <server> --all [--yes] [--dry-run]    # remove one MCP server everywhere
 syncthis doctor                              # MCP coverage + conflicts
 syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]  # plugin mirror → every agent (additive)
-syncthis plugin list                         # read-only plugin inventory
+syncthis plugin list                         # read-only cross-agent plugin overview
+syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
+                                             # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
 syncthis help
 ```
 
@@ -101,9 +105,13 @@ Diff + confirm or `--yes`. A failed primary read aborts loudly (an empty primary
 
 `doctor` prints per-server coverage across agents and any conflicts. Exits non-zero if conflicts present.
 
+`plugin list` is a read-only cross-agent overview: native plugins per plugin-capable agent (Claude, Codex), a Cursor write-only note (its plugin state isn't readable), and — built from one `npx skills list -g --json` ∩ the skill names Claude's installed plugins contribute — the plugin-derived skills present on each non-plugin agent.
+
+`plugin rm <plugin…>` is the **only** plugin-removal path and is reached only here (never by sync or mirror). It uninstalls each named plugin's native install from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`). Scope is explicit (`--all` or `--agents <a,b,c>`); it prints a diff, confirms in TTY or needs `--yes`, and supports `--dry-run`. Over-removal guard: a skill name another still-installed Claude plugin also provides is **kept**, not removed (syncthis can't see hand-added non-plugin skills sharing a name, so the diff lists exact names). `--keep-data` preserves Claude's plugin data dir. Cursor can't be uninstalled (write-only) and is reported as such.
+
 ## Sacred elements — do not change without explicit approval
 
-1. **Removal is allowed only with explicit rails, and never for plugins.** Union `sync` never deletes — it is purely additive. The MCP removal command (`syncthis rm`) must require (a) an explicit scope flag (`--all`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` available to preview. The plugin `mirror` is **additive only** — there is no plugin-uninstall path anywhere (no `removePlugin`, no `--remove-stale`), so a mirror can never wipe an agent's plugins. There is no implicit deletion anywhere in the tool.
+1. **Removal is allowed only with explicit rails.** Union `sync` and the plugin `mirror` never delete — they are purely additive (a mirror has no `removePlugin`/`--remove-stale`, so it can never wipe an agent's plugins). The two explicit removal commands — MCP `syncthis rm <server>` and plugin `syncthis plugin rm <plugin…>` — must each require (a) an explicit scope flag (`--all` or, for `plugin rm`, `--agents <list>`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` to preview. `plugin rm` additionally keeps a skill another installed plugin still provides (no collateral skill removal). There is no *implicit* deletion anywhere in the tool — removal only ever happens through these two guarded commands.
 2. **`.syncthis.bak` backup on first write.** Every target file gets a backup the first time syncthis writes to it. Tests assert this. Don't change the contract or the suffix.
 3. **Conflict policy (union sync): leave each agent's own copy untouched.** If the same server name has different configs in different agents (different env, command, args), `run`/`sync` does NOT pick a winner — it leaves each agent's existing version alone and reports the conflict. The user resolves by deleting the version they don't want and re-running sync.
 4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 12 adapters.
@@ -127,7 +135,7 @@ bun test                  # full suite
 bun tsc --noEmit          # typecheck
 ```
 
-Always run tests AND typecheck before bumping the version. Sacred elements (conflict policy, 0600 perms, .syncthis.bak, Claude per-project merge, directional confirmation) are non-negotiable.
+Always run tests AND typecheck before bumping the version. Sacred elements (removal rails incl. `plugin rm`, conflict policy, 0600 perms, .syncthis.bak, Claude per-project merge, directional confirmation) are non-negotiable.
 
 ## What this repo is NOT
 

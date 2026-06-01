@@ -3,7 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { adapters } from "./adapters/index.ts";
 import { expandHome, readJson } from "./io.ts";
-import { isSafeRepoSlug, run } from "./plugins/shell.ts";
+import { isSafeRepoSlug, isSafeSkillName, run } from "./plugins/shell.ts";
 import type { AgentId } from "./types.ts";
 
 // Agents that consume the open-plugin bundle natively — Claude (`claude plugin`),
@@ -182,13 +182,83 @@ async function installedSkillNames(): Promise<Set<string>> {
   }
 }
 
+// The skills CLI reports each skill's agents by human display label ("Hermes
+// Agent", "Gemini CLI", "GitHub Copilot"), not by syncthis AgentId. Map the labels
+// syncthis knows; an unknown label (e.g. "Warp", which has no MCP adapter) resolves
+// to undefined and is dropped. Lowercased keys so casing/spacing variance is moot.
+const SKILL_AGENT_LABELS: Record<string, AgentId> = {
+  "claude code": "claude-code",
+  cursor: "cursor",
+  codex: "codex",
+  "gemini cli": "gemini-cli",
+  gemini: "gemini-cli",
+  "kimi cli": "kimi-cli",
+  kimi: "kimi-cli",
+  antigravity: "antigravity",
+  "github copilot": "github-copilot",
+  "github copilot cli": "github-copilot",
+  windsurf: "windsurf",
+  opencode: "opencode",
+  openclaw: "openclaw",
+  "hermes agent": "hermes-agent",
+  hermes: "hermes-agent",
+  goose: "goose",
+  pi: "pi",
+};
+
+export function skillAgentLabelToId(label: string): AgentId | undefined {
+  return SKILL_AGENT_LABELS[label.trim().toLowerCase()];
+}
+
+export type InstalledSkill = { name: string; agents: AgentId[] };
+
+// Every globally-installed skill with the agents it's registered on, from
+// `npx skills list -g --json`. Returns null when the CLI can't be read (missing
+// npx, bad JSON) so callers can distinguish "couldn't read" from "no skills".
+export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
+  const res = await run("npx", ["-y", "skills", "list", "-g", "--json"], { timeoutMs: 60_000 });
+  if (!res.ok) return null;
+  try {
+    const arr = JSON.parse(res.stdout || "[]");
+    if (!Array.isArray(arr)) return null;
+    return (arr as Array<{ name?: unknown; agents?: unknown }>)
+      .map((s) => ({
+        name: typeof s?.name === "string" ? s.name : "",
+        agents: Array.isArray(s?.agents)
+          ? (s.agents as unknown[])
+              .map((a) => (typeof a === "string" ? skillAgentLabelToId(a) : undefined))
+              .filter((a): a is AgentId => !!a)
+          : [],
+      }))
+      .filter((s) => s.name);
+  } catch {
+    return null;
+  }
+}
+
+export type PluginDerivedSkills = { repo: string; marketplace: string; names: string[] };
+
+// The skill names contributed by each of Claude's skill-bearing plugin marketplaces.
+// This is the "plugins, expressed as skills" set — what the mirror surfaces to the
+// non-plugin agents, and what `plugin rm` removes from them. Local-only (no network).
+export async function resolvePluginDerivedSkills(): Promise<PluginDerivedSkills[]> {
+  const sources = await resolvePluginSkillSources();
+  return Promise.all(
+    sources.map(async (s) => ({
+      repo: s.repo,
+      marketplace: s.marketplace,
+      names: (await repoSkillNames(s.installLocation)) ?? [],
+    })),
+  );
+}
+
 // The skill names a marketplace clone provides. Walks the `skills/` subtree (and a
 // root-level SKILL.md) for every SKILL.md, since real marketplaces nest by category
 // (`skills/<category>/<skill>/SKILL.md`) as well as flat (`skills/<skill>/`). Keys
 // on each skill's frontmatter `name` — what `npx skills list` reports — falling back
 // to the directory name. Returns null when no SKILL.md is found, so the caller never
 // skips a repo it can't account for.
-async function repoSkillNames(installLocation: string): Promise<string[] | null> {
+export async function repoSkillNames(installLocation: string): Promise<string[] | null> {
   const files: string[] = [];
   await collectSkillMd(join(installLocation, "skills"), files, 3);
   if (await isFile(join(installLocation, "SKILL.md"))) files.push(join(installLocation, "SKILL.md"));
@@ -304,6 +374,79 @@ export async function addSkillRepos(
     out.push(await addOne(repo, agents));
   }
   return out;
+}
+
+export type SkillRemoveResult = {
+  skills: string[];
+  agents: AgentId[];
+  status: "removed" | "skipped" | "failed";
+  message?: string;
+};
+
+// `npx skills remove -g -a <agent>… -s <name>… -y` — remove the named skills from
+// each named agent, globally, non-interactively. Both flags are variadic in the
+// skills CLI (`--agent claude-code cursor`, `--skill pr-review commit`); `-s` is
+// placed last so the trailing `-y` flag terminates its value list.
+export function removeArgs(names: string[], agents: readonly AgentId[]): string[] {
+  return ["-y", "skills", "remove", "-g", "-a", ...agents, "-s", ...names, "-y"];
+}
+
+function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRemoveResult> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const child = spawn("npx", removeArgs(names, agents), {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, SKILLS_ADD_TIMEOUT_MS);
+    const finish = (r: SkillRemoveResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => (stdout += d));
+    child.stderr?.on("data", (d: string) => (stderr += d));
+    child.on("error", (err: Error) => finish({ skills: names, agents: [...agents], status: "failed", message: err.message }));
+    child.on("close", (code) => {
+      if (timedOut) return finish({ skills: names, agents: [...agents], status: "failed", message: `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s` });
+      if (code === 0) return finish({ skills: names, agents: [...agents], status: "removed" });
+      const blob = `${stdout}\n${stderr}`;
+      const tail = stderr.trim().split("\n").pop() || stdout.trim().split("\n").pop() || "";
+      // The skills CLI exits non-zero when nothing matched — not a failure for us
+      // (the skill was already gone), so report it as a benign skip.
+      if (/no (matching )?skills?\b|not found|nothing to remove/i.test(blob)) {
+        return finish({ skills: names, agents: [...agents], status: "skipped", message: "no matching skills" });
+      }
+      finish({ skills: names, agents: [...agents], status: "failed", message: `exit ${code}: ${tail}` });
+    });
+  });
+}
+
+// Remove specific skills (by name) from specific agents — the skill-cohort side of
+// `syncthis plugin rm`. Names are slug-validated (a leading "-" would be read as a
+// flag by the skills CLI) and deduped. One `npx skills remove` call covers every
+// (name, agent) pair. A no-op input (no names or no agents) returns "skipped"
+// without shelling out.
+export async function removeSkillNames(
+  names: string[],
+  agents: readonly AgentId[],
+  opts: { dryRun?: boolean } = {},
+): Promise<SkillRemoveResult> {
+  const safe = [...new Set(names)].filter((n) => isSafeSkillName(n)).sort();
+  if (safe.length === 0 || agents.length === 0) {
+    return { skills: [], agents: [...agents], status: "skipped", message: "nothing to remove" };
+  }
+  if (opts.dryRun) return { skills: safe, agents: [...agents], status: "removed", message: "dry-run" };
+  return removeOne(safe, agents);
 }
 
 // Surface skills bundled inside Claude's installed plugins to the skill-cohort

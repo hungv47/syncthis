@@ -99,6 +99,14 @@ export function assertSafeIdentifier(name: string, label = "name"): void {
   }
 }
 
+// A skill name that's safe to pass as a positional/`-s` value to `npx skills
+// remove`. Same flat-identifier rules as isSafeIdentifier, plus no leading "-"
+// (which the skills CLI would parse as a flag — option injection). Spaces are fine
+// (args are passed array-style, no shell), so multi-word skill names are allowed.
+export function isSafeSkillName(s: string): boolean {
+  return isSafeIdentifier(s) && !s.startsWith("-");
+}
+
 // A GitHub-style "owner/repo" slug, the only marketplace source we provision
 // from. Strict on purpose: rejects leading "-" (option injection into a CLI),
 // URLs, path traversal, and shell metacharacters. Args are passed array-style

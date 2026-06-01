@@ -6,6 +6,8 @@ import type {
   PluginInstallOpts,
   PluginInstallResult,
   PluginRecord,
+  PluginUninstallOpts,
+  PluginUninstallResult,
 } from "./types.ts";
 
 const CONFIG_PATH = "~/.claude.json";
@@ -106,5 +108,31 @@ export const claudePluginAdapter: PluginAdapter = {
     if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
     if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
     return { agent: "claude-code", target, status: "installed" };
+  },
+
+  // Guarded uninstall — reached only by `syncthis plugin rm`. Checks the installed
+  // snapshot first so an absent plugin is a no-op (status "absent"), never an error.
+  async uninstallPlugin(name: string, opts: PluginUninstallOpts): Promise<PluginUninstallResult> {
+    try {
+      assertSafeIdentifier(name, "plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "claude-code", target: name, status: "failed", message: (err as Error).message };
+    }
+    const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
+    const read = await this.read();
+    if (!read.error) {
+      const found = read.plugins.find((p) => p.name === name && (!opts.marketplace || p.marketplace === opts.marketplace));
+      if (!found) return { agent: "claude-code", target, status: "absent" };
+    }
+    if (opts.dryRun) return { agent: "claude-code", target, status: "uninstalled", message: "dry-run" };
+    // `--yes` is required when stdout/stdin isn't a TTY (skips the --prune confirm).
+    const args = ["plugin", "uninstall", "--yes"];
+    if (opts.keepData) args.push("--keep-data");
+    args.push("--", target);
+    const res = await run("claude", args, { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
+    if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+    return { agent: "claude-code", target, status: "uninstalled" };
   },
 };
