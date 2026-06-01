@@ -16,17 +16,24 @@ async function materializePluginMcp(name: string, mcpServers: Record<string, unk
 let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
+let originalXdg: string | undefined;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-mir-"));
   originalHome = process.env.HOME;
   originalPath = process.env.PATH;
+  originalXdg = process.env.XDG_CONFIG_HOME;
   process.env.HOME = workDir;
+  // Goose honors XDG_CONFIG_HOME unconditionally; clear it so the mirror's MCP-cohort
+  // write to goose lands under the temp HOME, not the real ~/.config.
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 afterEach(async () => {
   process.env.HOME = originalHome;
   process.env.PATH = originalPath;
+  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdg;
   await rm(workDir, { recursive: true, force: true });
 });
 

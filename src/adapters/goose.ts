@@ -1,5 +1,5 @@
 import yaml from "js-yaml";
-import { expandHome, resolveUnderHome } from "../io.ts";
+import { expandHome } from "../io.ts";
 import type { McpServer } from "../types.ts";
 import { createTextAdapter } from "./text-mcp.ts";
 
@@ -7,8 +7,9 @@ import { createTextAdapter } from "./text-mcp.ts";
 // defaulting to ~/.config/goose/config.yaml on BOTH macOS and Linux (Block's
 // `etcetera::choose_app_strategy` uses the XDG strategy on both; the
 // `~/Library/Application Support` comment in their source is stale). We honor
-// XDG_CONFIG_HOME only when it resolves under $HOME (the normal case) and otherwise
-// fall back to ~/.config — which also keeps writes inside $HOME during tests.
+// XDG_CONFIG_HOME UNCONDITIONALLY, exactly as Goose does — so syncthis always writes
+// the file Goose actually reads, never a divergent path. (Tests pin XDG_CONFIG_HOME
+// under a temp HOME to stay hermetic; see the adapter/sync/mirror test setups.)
 //
 // MCP servers live under `extensions:`, a map keyed by name. Each entry flattens
 // `enabled` + a `type` discriminator + the variant's fields. Goose's field names
@@ -19,15 +20,8 @@ import { createTextAdapter } from "./text-mcp.ts";
 
 function goosePath(): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  if (xdg) {
-    try {
-      const base = resolveUnderHome(xdg, "XDG_CONFIG_HOME").replace(/\/+$/, "");
-      return `${base}/goose/config.yaml`;
-    } catch {
-      // XDG points outside $HOME — fall back to the in-$HOME default.
-    }
-  }
-  return expandHome("~/.config/goose/config.yaml");
+  const base = (xdg ? expandHome(xdg) : expandHome("~/.config")).replace(/\/+$/, "");
+  return `${base}/goose/config.yaml`;
 }
 
 const MCP_TYPES = new Set(["stdio", "streamable_http", "sse"]);

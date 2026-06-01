@@ -20,18 +20,25 @@ const HTTP: McpServer = { type: "http", url: "https://mcp.linear.app/sse" };
 
 let workDir: string;
 let originalHome: string | undefined;
+let originalXdg: string | undefined;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-"));
   originalHome = process.env.HOME;
+  originalXdg = process.env.XDG_CONFIG_HOME;
   process.env.HOME = workDir;
-  // Clear adapter env vars so they don't redirect adapter paths during tests.
+  // Clear adapter env vars so they don't redirect adapter paths during tests. The
+  // goose adapter honors XDG_CONFIG_HOME unconditionally (like Goose), so clearing it
+  // keeps its writes under the temp HOME (~/.config) instead of the real config dir.
   delete process.env.COPILOT_HOME;
   delete process.env.OPENCLAW_CONFIG_PATH;
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 afterEach(async () => {
   process.env.HOME = originalHome;
+  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdg;
   await rm(workDir, { recursive: true, force: true });
 });
 
