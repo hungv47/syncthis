@@ -461,11 +461,18 @@ async function cmdPluginRemove(argv: string[]) {
   }
   // The full agent universe: MCP-syncable agents + skills-only agents (Pi).
   const known = [...listAgentIds(), "pi"] as AgentId[];
+  const hasAgents = typeof values.agents === "string" && values.agents.trim().length > 0;
+  // --all and --agents are mutually exclusive scopes — for a destructive command,
+  // silently letting one win could uninstall from unintended agents. Reject both.
+  if (values.all && hasAgents) {
+    console.error(red("plugin rm: pass either --all or --agents <a,b,c>, not both"));
+    process.exit(2);
+  }
   let agents: AgentId[];
   if (values.all) {
     agents = known;
-  } else if (typeof values.agents === "string" && values.agents.trim()) {
-    const wanted = values.agents.split(",").map((s) => s.trim()).filter(Boolean);
+  } else if (hasAgents) {
+    const wanted = (values.agents as string).split(",").map((s) => s.trim()).filter(Boolean);
     const bad = wanted.filter((a) => !known.includes(a as AgentId));
     if (bad.length) {
       console.error(red(`unknown agent(s): ${bad.join(", ")}`));
@@ -482,19 +489,25 @@ async function cmdPluginRemove(argv: string[]) {
   const dryRun = !!values["dry-run"];
   const preview = await runPluginUninstall({ plugins, agents, apply: false, keepData });
   printUninstallPreview(preview);
-  if (!uninstallHasChanges(preview)) {
+  // Skill removal was scoped, but Claude's plugin list (the source for resolving which
+  // skills a plugin contributed) couldn't be read — so we can't honor it. Don't let
+  // that masquerade as a clean "nothing to do".
+  const skillBlocked = !!preview.claudeReadError && preview.skillScope.length > 0;
+  if (!uninstallHasChanges(preview) && !skillBlocked) {
     console.log(dim("nothing to do."));
     return;
   }
   if (dryRun) {
     console.log(dim("dry-run — no changes applied."));
+    if (skillBlocked) process.exit(1);
     return;
   }
   await confirmDestructive(!!values.yes);
   const onProgress = (label: string, i: number, total: number) =>
     process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
   const applied = await runPluginUninstall({ plugins, agents, apply: true, keepData, onProgress });
-  printUninstallApplied(applied);
+  const failed = printUninstallApplied(applied);
+  if (failed > 0 || skillBlocked) process.exit(1);
 }
 
 async function cmdFanOut(argv: string[]) {
@@ -842,9 +855,16 @@ function printUninstallPreview(r: import("../src/plugins/uninstall.ts").Uninstal
   for (const a of r.unsupportedAgents) {
     console.log(`  ${dim("·")} ${a.padEnd(14)} ${dim("can't uninstall here (write-only plugin target, no list/uninstall CLI)")}`);
   }
+  if (r.claudeReadError && r.skillScope.length) {
+    console.log(
+      yellow(
+        `  ! couldn't read Claude's plugins (${r.claudeReadError}) — can't resolve which surfaced skills to remove from ${r.skillScope.join(", ")}; those skills will be left in place`,
+      ),
+    );
+  }
 }
 
-function printUninstallApplied(r: import("../src/plugins/uninstall.ts").UninstallReport) {
+function printUninstallApplied(r: import("../src/plugins/uninstall.ts").UninstallReport): number {
   let removed = 0;
   let absent = 0;
   let skipped = 0;
@@ -883,7 +903,7 @@ function printUninstallApplied(r: import("../src/plugins/uninstall.ts").Uninstal
     failed ? red(`${failed} failed`) : "",
   ].filter(Boolean);
   if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
-  if (failed > 0) process.exit(1);
+  return failed;
 }
 
 function exitIfFailed(writes: { status: RowStatus }[]) {

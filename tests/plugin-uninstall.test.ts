@@ -46,15 +46,20 @@ function codexTable(rows: CodexRow[]): string {
 }
 
 // Fake `claude`: plugin list (+ marketplace list) + a configurable `plugin uninstall`.
-async function installFakeClaude(listJson: string, opts: { uninstallExit?: number; uninstallStderr?: string } = {}) {
+// `listExit` makes `plugin list --json` fail, exercising the unreadable-Claude path.
+async function installFakeClaude(
+  listJson: string,
+  opts: { uninstallExit?: number; uninstallStderr?: string; listExit?: number } = {},
+) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
   const listFile = join(workDir, "claude-list.json");
   await writeFile(listFile, listJson);
   const stderr = (opts.uninstallStderr ?? "fake uninstall failure").replace(/`/g, "\\`");
+  const listBranch = opts.listExit != null ? `echo "claude list boom" >&2; exit ${opts.listExit}` : `cat ${listFile}; exit 0`;
   const script = `#!/bin/sh
 echo "claude $@" >> ${invocationsFile}
-if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
+if [ "$1 $2 $3" = "plugin list --json" ]; then ${listBranch}; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi
 if [ "$1 $2" = "plugin uninstall" ]; then ${opts.uninstallExit != null ? `echo "${stderr}" >&2; exit ${opts.uninstallExit}` : "exit 0"}; fi
 exit 0
@@ -360,6 +365,35 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.skills.agents).toEqual(["codex", "opencode"]);
     expect(r.skillResult?.status).toBe("removed");
     expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a codex opencode -s alpha -y")).toBe(true);
+  });
+
+  // Regression (review P2/finding 3): the SKILL.md frontmatter name can differ from
+  // the install slug; `npx skills list`/`remove` key on the slug. Removal must resolve
+  // to the slug the CLI actually recognizes, not the (shown-but-unmatched) name.
+  test("resolves removal to the install slug when it differs from the frontmatter name", async () => {
+    const fooDir = join(workDir, "plugins", "foo");
+    await mkdir(join(fooDir, "skills", "convex-best-practices"), { recursive: true });
+    await writeFile(join(fooDir, "skills", "convex-best-practices", "SKILL.md"), "---\nname: Convex Best Practices\n---\n");
+    await installFakeClaude(JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]));
+    await installFakeCodex(codexTable([])); // foo not native on codex
+    // `skills list` reports the SLUG, not the spaced frontmatter name.
+    await installFakeNpx({ listJson: '[{"name":"convex-best-practices","agents":["OpenCode"]}]', removeExit: 0 });
+
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["opencode"], apply: true });
+    expect(r.skills.names).toEqual(["convex-best-practices"]); // slug, not "Convex Best Practices"
+    expect(r.skillResult?.status).toBe("removed");
+    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a opencode -s convex-best-practices -y")).toBe(true);
+  });
+
+  // Regression (review finding 2): a skill-only scope must NOT silently no-op when
+  // Claude's plugin list (the skill-name source) is unreadable.
+  test("surfaces a Claude-read error instead of an empty skill plan", async () => {
+    await installFakeClaude("[]", { listExit: 1 }); // `claude plugin list` fails
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["opencode"], apply: false });
+    expect(r.claudeReadError).toBeTruthy();
+    expect(r.skillScope).toContain("opencode");
+    expect(r.skills.names).toEqual([]); // couldn't resolve — surfaced, not silently dropped
   });
 
   test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {

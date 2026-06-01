@@ -305,6 +305,9 @@ async function doPluginUninstall() {
     log.info(`remove ${preview.skills.names.length} surfaced skill(s) from ${preview.skills.agents.length} agent(s): ${preview.skills.names.join(", ")}`);
   }
   if (preview.skills.kept.length) log.info(`keeping (still provided by another plugin): ${preview.skills.kept.join(", ")}`);
+  if (preview.claudeReadError && preview.skillScope.length) {
+    log.warn(`couldn't read Claude's plugins (${preview.claudeReadError}) — surfaced skills on ${preview.skillScope.join(", ")} can't be resolved and will be left in place`);
+  }
 
   const confirm = await select({
     message: "apply? this uninstalls plugins and removes their surfaced skills.",

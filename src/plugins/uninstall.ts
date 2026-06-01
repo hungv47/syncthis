@@ -20,8 +20,8 @@ import { parsePluginId } from "./shell.ts";
 import type { PluginUninstallResult } from "./types.ts";
 import {
   listInstalledSkills,
+  pluginSkillIdentities,
   removeSkillNames,
-  repoSkillNames,
   skillCohort,
   type SkillRemoveResult,
 } from "../skills.ts";
@@ -60,6 +60,14 @@ export type UninstallReport = {
   unsupportedAgents: AgentId[];
   native: NativeUninstallTarget[];
   skills: SkillRemovalPlan;
+  // Requested agents eligible for skill removal (skill cohort + Codex), regardless of
+  // whether they currently hold a removable skill. Lets the caller tell that skill
+  // removal was *intended* even when nothing resolved.
+  skillScope: AgentId[];
+  // Set when Claude's plugin list (the source for mapping plugins → skill names)
+  // couldn't be read. With it set, skill names can't be resolved — so a skill-only
+  // scope must surface this rather than silently report "nothing to do".
+  claudeReadError?: string;
   // Apply outputs (undefined in preview).
   nativeResults?: PluginUninstallResult[];
   skillResult?: SkillRemoveResult;
@@ -74,11 +82,15 @@ export type UninstallRunOpts = {
   onProgress?: (label: string, index: number, total: number) => void;
 };
 
-// The skill names a single installed plugin contributes, read from its own install
-// dir. Empty when the plugin has no known path or no skills.
-async function pluginSkillNames(path: string | undefined): Promise<string[]> {
+// Candidate skill identities a single installed plugin contributes, read from its
+// own install dir. Returns BOTH the SKILL.md frontmatter name and the leaf dir name
+// (the install slug) per skill, so the caller can match against whichever identity
+// `npx skills list`/`remove` uses (they normally agree, but a title-cased frontmatter
+// name with a kebab install dir would otherwise be shown but never removed). Empty
+// when the plugin has no known path or no skills.
+async function pluginSkillIds(path: string | undefined): Promise<string[]> {
   if (!path) return [];
-  return (await repoSkillNames(path)) ?? [];
+  return await pluginSkillIdentities(path);
 }
 
 export async function runPluginUninstall(opts: UninstallRunOpts): Promise<UninstallReport> {
@@ -130,28 +142,38 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   // filter below won't match them — the native uninstall handles those.)
   const skillRemovalAgents = [...new Set<AgentId>([...cohort, "codex"])];
   const skillAgents = requested.filter((a) => skillRemovalAgents.includes(a));
+
+  // The authoritative skill identities are what `npx skills list` reports — the same
+  // ones `npx skills remove -s` matches. Resolve the plugins' contributed skills to
+  // those identities (matching by frontmatter name OR install-slug), so the names we
+  // remove are exactly what the CLI recognizes. When the list is unreadable, fall back
+  // to the raw candidate identities (degraded, best-effort).
+  const installed = await listInstalledSkills();
+  const installedNames = installed ? new Set(installed.map((s) => s.name)) : null;
+
   // Skill propagation is Claude-driven, so derived skills correspond to Claude's
-  // installed plugins. Partition every Claude plugin's skill names into "to remove"
-  // (the records a requested spec matches) vs "to keep" (every other still-installed
-  // record — including a sibling marketplace not being removed) so a name shared with
-  // a surviving plugin is never removed.
+  // installed plugins. Partition each plugin's resolved skill identities into "to
+  // remove" (records a requested spec matches) vs "to keep" (every other still-
+  // installed record — including a sibling marketplace not being removed) so a name a
+  // surviving plugin still provides is never removed.
   const claudeRead = await claudePluginAdapter.read();
+  const claudeReadError = claudeRead.error;
   const claudePlugins = claudeRead.error ? [] : claudeRead.plugins;
   const removeNames = new Set<string>();
   const keepNames = new Set<string>();
   await Promise.all(
     claudePlugins.map(async (rec) => {
-      const names = await pluginSkillNames(rec.path);
+      const ids = await pluginSkillIds(rec.path);
+      const resolved = installedNames ? ids.filter((n) => installedNames.has(n)) : ids;
       const target = recordMatches(rec.name, rec.marketplace);
-      for (const n of names) (target ? removeNames : keepNames).add(n);
+      for (const n of resolved) (target ? removeNames : keepNames).add(n);
     }),
   );
   const kept = [...removeNames].filter((n) => keepNames.has(n)).sort();
   const namesToRemove = [...removeNames].filter((n) => !keepNames.has(n)).sort();
 
-  // Narrow the skill-cohort agents to those that actually hold a removable skill, so
-  // the diff is honest. If the global list is unreadable, keep every requested one.
-  const installed = await listInstalledSkills();
+  // Narrow the candidate agents to those that actually hold a removable skill, so the
+  // diff is honest. If the global list is unreadable, keep every requested one.
   let effectiveSkillAgents = skillAgents;
   if (installed && namesToRemove.length > 0) {
     const removeSet = new Set(namesToRemove);
@@ -165,9 +187,18 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   }
 
   const skills: SkillRemovalPlan = { names: namesToRemove, kept, agents: effectiveSkillAgents.sort() };
+  const base = {
+    plugins: pluginSet,
+    requestedAgents: requested,
+    unsupportedAgents,
+    native,
+    skills,
+    skillScope: skillAgents.slice().sort(),
+    ...(claudeReadError ? { claudeReadError } : {}),
+  };
 
   if (!opts.apply) {
-    return { plugins: pluginSet, requestedAgents: requested, unsupportedAgents, native, skills, applied: false };
+    return { ...base, applied: false };
   }
 
   // --- Apply ---
@@ -196,7 +227,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
     skillResult = await removeSkillNames(skills.names, skills.agents);
   }
 
-  return { plugins: pluginSet, requestedAgents: requested, unsupportedAgents, native, skills, nativeResults, skillResult, applied: true };
+  return { ...base, nativeResults, skillResult, applied: true };
 }
 
 // Anything to actually do? (a present native plugin, or ≥1 skill to remove.)

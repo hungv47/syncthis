@@ -266,6 +266,24 @@ export async function repoSkillNames(installLocation: string): Promise<string[] 
   return Promise.all(files.map(skillName));
 }
 
+// Candidate install identities for the skills a plugin bundles: for every SKILL.md
+// leaf, BOTH its frontmatter `name` and its leaf directory name (the install slug).
+// `npx skills list`/`remove` key on one identity; the two normally agree, but a
+// title-cased frontmatter name with a kebab install dir would otherwise be shown yet
+// never removed. Returning both lets a caller match whichever the CLI uses. Deduped;
+// empty when the install dir has no SKILL.md.
+export async function pluginSkillIdentities(installLocation: string): Promise<string[]> {
+  const files: string[] = [];
+  await collectSkillMd(join(installLocation, "skills"), files, 3);
+  if (await isFile(join(installLocation, "SKILL.md"))) files.push(join(installLocation, "SKILL.md"));
+  const ids = new Set<string>();
+  for (const f of files) {
+    ids.add(await skillName(f)); // frontmatter name (falls back to dir name)
+    ids.add(basename(dirname(f))); // leaf dir name = install slug
+  }
+  return [...ids];
+}
+
 // Collect SKILL.md paths under `dir`. A directory containing SKILL.md is a skill leaf
 // — record it and don't descend into its support files. Depth-bounded as a backstop.
 async function collectSkillMd(dir: string, out: string[], depth: number): Promise<void> {
