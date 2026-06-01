@@ -64,6 +64,12 @@ export type UninstallReport = {
   // whether they currently hold a removable skill. Lets the caller tell that skill
   // removal was *intended* even when nothing resolved.
   skillScope: AgentId[];
+  // The subset of skillScope whose ONLY removal mechanism is surfaced-skill removal —
+  // the pure non-plugin cohort, EXCLUDING Codex (whose content a native uninstall
+  // covers). If Claude is unreadable and this is non-empty, removal genuinely failed
+  // for those agents (hard error); a Codex-only scope, by contrast, is covered by its
+  // native uninstall, so an unreadable Claude there is only a best-effort warning.
+  requiredSkillAgents: AgentId[];
   // Set when Claude's plugin list (the source for mapping plugins → skill names)
   // couldn't be read. With it set, skill names can't be resolved — so a skill-only
   // scope must surface this rather than silently report "nothing to do".
@@ -194,6 +200,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
     native,
     skills,
     skillScope: skillAgents.slice().sort(),
+    requiredSkillAgents: requested.filter((a) => cohort.includes(a)).sort(),
     ...(claudeReadError ? { claudeReadError } : {}),
   };
 

@@ -501,10 +501,12 @@ async function cmdPluginRemove(argv: string[]) {
   const dryRun = !!values["dry-run"];
   const preview = await runPluginUninstall({ plugins, agents, apply: false, keepData });
   printUninstallPreview(preview);
-  // Skill removal was scoped, but Claude's plugin list (the source for resolving which
-  // skills a plugin contributed) couldn't be read — so we can't honor it. Don't let
-  // that masquerade as a clean "nothing to do".
-  const skillBlocked = !!preview.claudeReadError && preview.skillScope.length > 0;
+  // Claude's plugin list (the source for resolving which skills a plugin contributed)
+  // couldn't be read. That's a hard block only for agents whose ONLY mechanism is
+  // surfaced-skill removal (the pure non-plugin cohort) — a Codex-only scope is covered
+  // by its native uninstall, so it's just a best-effort warning there. Don't let a real
+  // block masquerade as a clean "nothing to do".
+  const skillBlocked = !!preview.claudeReadError && preview.requiredSkillAgents.length > 0;
   if (!uninstallHasChanges(preview) && !skillBlocked) {
     console.log(dim("nothing to do."));
     return;
@@ -524,9 +526,15 @@ async function cmdPluginRemove(argv: string[]) {
   // it loudly instead of letting the apply look clean.
   // Base the exit on the APPLY outcome, not the stale preview `skillBlocked` — a
   // preview that couldn't read Claude but an apply that then succeeded is a success.
-  const appliedBlocked = !!applied.claudeReadError && applied.skillScope.length > 0;
-  if (appliedBlocked) {
-    console.error(red(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.skillScope.join(", ")} were NOT removed; re-run once claude is available`));
+  const appliedBlocked = !!applied.claudeReadError && applied.requiredSkillAgents.length > 0;
+  if (applied.claudeReadError && applied.skillScope.length) {
+    if (appliedBlocked) {
+      console.error(red(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.requiredSkillAgents.join(", ")} were NOT removed; re-run once claude is available`));
+    } else {
+      // Only Codex was skill-scoped — its native uninstall did the work; we just
+      // couldn't check for any fallback-surfaced skills. Warn, don't fail.
+      console.error(yellow(`note: claude unreadable (${applied.claudeReadError}) — couldn't check for fallback-surfaced skills on ${applied.skillScope.join(", ")}; the native uninstall still applied`));
+    }
   }
   if (failed > 0 || appliedBlocked) process.exit(1);
 }

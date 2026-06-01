@@ -348,7 +348,8 @@ async function doPluginUninstall() {
     else if (applied.skillResult.status === "failed") failed += 1;
   }
   if (applied.claudeReadError && applied.skillScope.length) {
-    log.warn(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.skillScope.join(", ")} were NOT removed`);
+    const who = applied.requiredSkillAgents.length ? applied.requiredSkillAgents : applied.skillScope;
+    log.warn(`claude unreadable (${applied.claudeReadError}) — surfaced skills on ${who.join(", ")} couldn't be resolved${applied.requiredSkillAgents.length ? " and were NOT removed" : " (native uninstall still applied)"}`);
   }
   if (failed > 0) log.error(`${removed} removed, ${failed} failed — run \`syncthis plugin rm\` for detail`);
   else log.success(`uninstall complete: ${removed} removed.`);

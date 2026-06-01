@@ -409,6 +409,21 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.skillResult).toBeUndefined(); // nothing removed
   });
 
+  // Regression (review P2): a Codex-only scope must NOT be hard-blocked when Claude is
+  // unreadable — Codex's content is its native plugin, so the native uninstall is the
+  // real work; surfaced-skill resolution is best-effort there. requiredSkillAgents
+  // (which the CLI exits on) must exclude Codex.
+  test("codex-only scope is not skill-blocked when Claude is unreadable", async () => {
+    await installFakeClaude("[]", { listExit: 1 }); // claude plugin list fails
+    await installFakeCodex(codexTable([["foo@mkt", "installed, enabled", "1.0.0", "/c/foo"]]));
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["codex"], apply: true });
+    expect(r.claudeReadError).toBeTruthy();
+    expect(r.skillScope).toEqual(["codex"]); // codex IS a skill-removal candidate…
+    expect(r.requiredSkillAgents).toEqual([]); // …but not a *required* one (native covers it)
+    expect(r.nativeResults?.find((x) => x.agent === "codex")?.status).toBe("uninstalled");
+  });
+
   test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {
     await installFakeClaude(JSON.stringify([]));
     await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));
