@@ -396,6 +396,19 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.skills.names).toEqual([]); // couldn't resolve — surfaced, not silently dropped
   });
 
+  // Regression (Claude re-review P2): on APPLY, an unreadable Claude must still carry
+  // claudeReadError + skillScope (and run no skill removal) so the CLI can surface it
+  // rather than report a clean apply that silently dropped skill removal.
+  test("apply also surfaces a Claude-read error and runs no skill removal", async () => {
+    await installFakeClaude("[]", { listExit: 1 });
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["opencode"], apply: true });
+    expect(r.claudeReadError).toBeTruthy();
+    expect(r.skillScope).toContain("opencode");
+    expect(r.skills.names).toEqual([]);
+    expect(r.skillResult).toBeUndefined(); // nothing removed
+  });
+
   test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {
     await installFakeClaude(JSON.stringify([]));
     await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));

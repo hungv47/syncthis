@@ -517,7 +517,14 @@ async function cmdPluginRemove(argv: string[]) {
     process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
   const applied = await runPluginUninstall({ plugins, agents, apply: true, keepData, onProgress });
   const failed = printUninstallApplied(applied);
-  if (failed > 0 || skillBlocked) process.exit(1);
+  // The apply phase re-reads Claude; if that read fails now (even though the preview's
+  // succeeded), skill names couldn't be resolved and skill removal was dropped. Surface
+  // it loudly instead of letting the apply look clean.
+  const appliedBlocked = !!applied.claudeReadError && applied.skillScope.length > 0;
+  if (appliedBlocked) {
+    console.error(red(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.skillScope.join(", ")} were NOT removed; re-run once claude is available`));
+  }
+  if (failed > 0 || skillBlocked || appliedBlocked) process.exit(1);
 }
 
 async function cmdFanOut(argv: string[]) {
@@ -641,6 +648,12 @@ async function cmdAddPlugin(argv: string[]) {
     process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
   const applied = await runPluginAdd({ plugins: positionals, agents, apply: true, onProgress });
   const failed = printPluginAdd(applied, false);
+  // Claude (the source) failing at apply time means nothing could be resolved — surface
+  // it rather than reporting an empty, clean-looking add.
+  if (applied.sourceError) {
+    console.error(red(`couldn't read claude-code (the source) during apply: ${applied.sourceError}`));
+    process.exit(1);
+  }
   if (failed > 0) process.exit(1);
 }
 

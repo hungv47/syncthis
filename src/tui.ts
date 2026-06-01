@@ -347,6 +347,9 @@ async function doPluginUninstall() {
     if (applied.skillResult.status === "removed") removed += applied.skillResult.skills.length;
     else if (applied.skillResult.status === "failed") failed += 1;
   }
+  if (applied.claudeReadError && applied.skillScope.length) {
+    log.warn(`couldn't read Claude's plugins during apply (${applied.claudeReadError}) — surfaced skills on ${applied.skillScope.join(", ")} were NOT removed`);
+  }
   if (failed > 0) log.error(`${removed} removed, ${failed} failed — run \`syncthis plugin rm\` for detail`);
   else log.success(`uninstall complete: ${removed} removed.`);
 }
@@ -540,6 +543,10 @@ async function managePluginAdd() {
     throw e;
   });
   s.stop("Done.");
+  if (applied.sourceError) {
+    log.error(`couldn't read claude-code (the source) during apply: ${applied.sourceError}`);
+    return;
+  }
   let ok = 0;
   let failed = 0;
   for (const ins of applied.installs) ins.status === "failed" ? (failed += 1) : (ok += 1);
