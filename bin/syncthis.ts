@@ -10,11 +10,11 @@ const HELP = `syncthis — keep your AI tools in sync
   mirror them across every coding agent.
 
   it does three things:
-    • MCP servers — union sync across all 11 agents (the unique core)
+    • MCP servers — union sync across all 12 agents (the unique core)
     • plugins     — mirror one agent's plugins onto the other plugin agents
                     (Claude ↔ Codex natively; Cursor via \`npx plugins\`)
     • skills      — \`npx skills update -y\`, plus surfacing plugin-bundled skills
-                    to the 8 non-plugin agents (vercel-labs/skills)
+                    to the non-plugin agents (vercel-labs/skills)
 
 usage:
   syncthis                         interactive picker (or HELP if non-TTY)
@@ -34,7 +34,7 @@ usage:
                                              additive: make <primary>'s plugin content reachable on
                                              every other agent. Codex gets native plugins (missing
                                              marketplaces are registered automatically); Cursor is
-                                             pushed via \`npx plugins --target cursor\`; the 8 non-plugin
+                                             pushed via \`npx plugins --target cursor\`; the non-plugin
                                              agents get the bundled skills via \`npx skills add\` AND the
                                              bundled MCP servers lifted into their MCP config (additive,
                                              conflicts left untouched). Anything Codex can't load as a
@@ -44,20 +44,21 @@ usage:
   syncthis help
 
 what sync does:
-  1. reads MCP servers from all 11 supported agents.
+  1. reads MCP servers from all 12 supported agents.
      for Claude, merges top-level + every per-project mcpServers scope.
   2. computes the union (servers in any agent → propagated to every agent).
   3. for any name with conflicting configs across agents, leaves each agent's
      own version untouched and reports the conflict — you resolve manually.
-  4. surfaces skills bundled inside your Claude plugins to the 8 non-plugin agents
+  4. surfaces skills bundled inside your Claude plugins to the non-plugin agents
      (\`npx skills add\`), since those agents can't read plugins, then runs
      \`npx skills update -y\` to refresh everything (delegated to vercel-labs/skills).
 
-agents supported (use these IDs with the directional command):
+agents supported for MCP sync (use these IDs with the directional command):
   claude-code, cursor, codex, gemini-cli, kimi-cli, antigravity,
-  github-copilot, windsurf, opencode, openclaw, hermes-agent
+  github-copilot, windsurf, opencode, openclaw, hermes-agent, goose
   plugin cohort (get the full bundle): claude-code, codex (native CLI), cursor
-  (write-only via npx plugins). the other 8 get the skill subset via npx skills.
+  (write-only via npx plugins). the other non-plugin agents get the skill subset via npx skills.
+  skills also reach `pi` (no native MCP, so skills-only — not an MCP-sync target).
 
 flags:
   --dry-run       report what would change without writing.
@@ -130,7 +131,7 @@ async function cmdSkills(argv: string[]) {
       "syncthis skills              — npx skills update -y (refresh every installed skill)\n" +
         "syncthis skills from-plugins — add skills bundled in Claude plugins to the non-plugin agents\n" +
         "                               (gemini-cli, kimi-cli, antigravity, github-copilot, windsurf,\n" +
-        "                                opencode, openclaw, hermes-agent). [--dry-run]",
+        "                                opencode, openclaw, hermes-agent, goose, pi). [--dry-run]",
     );
     return;
   }
@@ -357,7 +358,7 @@ function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport, 
     skipped += 1;
     row("skipped", "cursor", "", r.cursor.reason);
   }
-  // Skill-cohort push (the 8 non-plugin agents).
+  // Skill-cohort push (the non-plugin agents).
   if (!r.skillCohort.supported) {
     if (r.skillCohort.reason) {
       skipped += 1;

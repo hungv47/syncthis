@@ -10,6 +10,7 @@ import { windsurfAdapter } from "./windsurf.ts";
 import { opencodeAdapter } from "./opencode.ts";
 import { openclawAdapter } from "./openclaw.ts";
 import { hermesAdapter } from "./hermes.ts";
+import { gooseAdapter } from "./goose.ts";
 
 export const adapters: Adapter[] = [
   claudeAdapter,
@@ -23,4 +24,5 @@ export const adapters: Adapter[] = [
   opencodeAdapter,
   openclawAdapter,
   hermesAdapter,
+  gooseAdapter,
 ];

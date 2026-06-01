@@ -6,19 +6,19 @@
 
 ![syncthis](./assets/banners/syncthis.png)
 
-![syncthis run mirroring MCP servers across 11 agents](./assets/demo.gif)
+![syncthis run mirroring MCP servers across 12 agents](./assets/demo.gif)
 
 **One CLI to keep MCP servers in sync across your AI coding agents — plus a plugin mirror and skills delegation.**
 
-Every coding agent stores its MCP servers in its own file, its own format, its own path. Add a server to Claude Code and the other ten don't know it exists — so you wire up the same server, by hand, again and again. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.** Nothing else does cross-agent MCP sync — that's why it exists.
+Every coding agent stores its MCP servers in its own file, its own format, its own path. Add a server to Claude Code and the other eleven don't know it exists — so you wire up the same server, by hand, again and again. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.** Nothing else does cross-agent MCP sync — that's why it exists.
 
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
-- **MCP servers** — union sync across all 11 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
-- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **8 non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills.
+- **MCP servers** — union sync across all 12 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
+- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
-Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes** — 11 in total.
+Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes, Goose** — 12 in total.
 
 > Union sync writes the merged set to **every** supported agent — including ones you haven't installed yet — so your servers are already in place the moment you start using a new agent. It's additive and reversible by design (see [Safe by design](#safe-by-design)); `--dry-run` previews any command.
 
@@ -48,7 +48,7 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 
 | | |
 |---|---|
-| ✅ syncs MCP server configs across 11 coding agents | ❌ installs MCP servers (use `mcpm`, `claude mcp add`, etc.) |
+| ✅ syncs MCP server configs across 12 coding agents | ❌ installs MCP servers (use `mcpm`, `claude mcp add`, etc.) |
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
@@ -84,7 +84,7 @@ syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every othe
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # MCP coverage + conflict report
 
-# Plugins → every agent (Codex/Cursor as plugins; the other 8 get the skills). Additive.
+# Plugins → every agent (Codex/Cursor as plugins; the other non-plugin agents get the skills). Additive.
 syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # propagate primary's plugin content to every agent
 syncthis plugin list                        # list installed plugins per agent (read-only)
 syncthis help
@@ -111,6 +111,9 @@ syncthis help
 | `opencode` | `~/.config/opencode/opencode.json` |
 | `openclaw` | `~/.openclaw/openclaw.json` (override via `$OPENCLAW_CONFIG_PATH`) |
 | `hermes-agent` | `~/.hermes/config.yaml` |
+| `goose` | `~/.config/goose/config.yaml` (YAML `extensions`; built-ins preserved) |
+
+Skills additionally reach **`pi`** (badlogic/pi-mono), which ships without native MCP by design — so it's a skills-only target (no MCP adapter).
 
 ## What `syncthis run` does
 
@@ -149,7 +152,7 @@ syncthis from antigravity --all --yes
 
 ```
 $ syncthis run
-read 3 server name(s) across 11 agent(s); 2 synced, 1 conflict(s)
+read 3 server name(s) across 12 agent(s); 2 synced, 1 conflict(s)
   ✓ claude-code     ~/.claude.json
   ✓ cursor          ~/.cursor/mcp.json
   ...

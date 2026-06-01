@@ -26,9 +26,9 @@ servers and install those.
 ## Locked decisions
 
 1. **MCP engine = native adapters.** syncthis keeps writing MCP config directly to
-   all 11 agents (zero-dep, broadest coverage). mcpm is *not* the writer — it lacks
-   Kimi/Antigravity/Copilot/OpenClaw/Hermes and needs Python. mcpm is only a future
-   optional *registry resolver* for `add mcp <name>` (Phase 4).
+   all agents (zero-dep, broadest coverage). mcpm is *not* the writer — it lacks
+   Kimi/Antigravity/Copilot/OpenClaw/Hermes/Goose and needs Python. mcpm is only a
+   future optional *registry resolver* for `add mcp <name>` (Phase 4).
 2. **Scope = full installer/remover**, built in phases.
 3. **Plugins stay additive-only.** `add` covers all three types; `remove` covers
    **MCP + skills only**. There is no plugin-uninstall path anywhere — that remains
@@ -43,6 +43,27 @@ syncthis remove <name> [--mcp|--skill] [--all] [--dry-run] [--yes]
 ```
 
 Shared flags: `--to`, `--all`, `--dry-run`, `--yes`.
+
+## Agent coverage
+
+Two axes, deliberately separate:
+
+- **MCP-syncable agents** (need a native config adapter): Claude Code, Cursor, Codex,
+  Gemini CLI, Kimi CLI, Antigravity, GitHub Copilot, Windsurf, OpenCode, OpenClaw,
+  Hermes, **Goose** (12). `mcpCohort()` = these minus the plugin cohort.
+- **Skill-receiving agents** (anything `npx skills` targets — 55+): the MCP set plus
+  skills-only agents like **Pi**, which ships without native MCP by design (no MCP
+  adapter). `skillCohort()` = `mcpCohort()` + `SKILL_ONLY_AGENTS`.
+
+Adding a new MCP-syncable agent = one adapter in `src/adapters/` + the registry; both
+cohorts pick it up automatically. Adding a skills-only agent = one id in
+`SKILL_ONLY_AGENTS`. An adapter must match the agent's exact native config path/format
+and use the same id `npx skills add -a <id>` expects — a wrong path silently no-ops, so
+each one is verified before shipping (don't guess paths/formats).
+
+Not verified / not added yet (need confirmed config formats before an adapter):
+Cline, Continue, Qwen, Trae, Zed, VSCode, Roo, Amp, … — straightforward to add per the
+pattern above when a format is confirmed.
 
 ## Phases
 

@@ -214,7 +214,7 @@ describe("runMirror — plugin MCP decomposition", () => {
 
     const report = await runMirror({ from: "claude-code", apply: false });
     expect(report.mcpCohort.supported).toBe(true);
-    expect(report.mcpCohort.agents.length).toBe(8); // the 8 non-plugin agents
+    expect(report.mcpCohort.agents.length).toBe(9); // the 9 non-plugin MCP agents (incl. goose)
     expect(report.mcpCohort.servers.map((s) => s.name)).toEqual(["db"]);
     expect((report.mcpCohort.servers[0]!.server as { command: string }).command).toBe(join(cacheDir, "bin/db"));
     expect(mirrorHasChanges(report)).toBe(true);

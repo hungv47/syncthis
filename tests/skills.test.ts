@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PLUGIN_TARGET_AGENTS,
+  SKILL_ONLY_AGENTS,
   addArgs,
   addSkillRepos,
   addSkillsFromPlugins,
+  mcpCohort,
   resolvePluginSkillSources,
   skillCohort,
 } from "../src/skills.ts";
@@ -78,13 +80,23 @@ async function readInvocations(): Promise<string[]> {
   }
 }
 
-describe("skillCohort", () => {
-  test("excludes the 3 plugin agents, keeps the other 8", () => {
+describe("mcpCohort / skillCohort", () => {
+  test("mcpCohort = non-plugin MCP adapters (excludes plugin + skill-only agents)", () => {
+    const cohort = mcpCohort();
+    for (const a of PLUGIN_TARGET_AGENTS) expect(cohort).not.toContain(a);
+    for (const a of SKILL_ONLY_AGENTS) expect(cohort).not.toContain(a);
+    expect(cohort).toContain("opencode");
+    expect(cohort).toContain("goose");
+    expect(cohort.length).toBe(9);
+  });
+
+  test("skillCohort = mcpCohort plus skills-only agents (pi)", () => {
     const cohort = skillCohort();
     for (const a of PLUGIN_TARGET_AGENTS) expect(cohort).not.toContain(a);
-    expect(cohort).toContain("opencode");
+    expect(cohort).toContain("pi");
+    expect(cohort).toContain("goose");
     expect(cohort).toContain("gemini-cli");
-    expect(cohort.length).toBe(8);
+    expect(cohort.length).toBe(10);
   });
 });
 
@@ -169,7 +181,7 @@ describe("addSkillsFromPlugins", () => {
     expect(r.ran).toBe(true);
     expect(r.dryRun).toBe(true);
     expect(r.results).toEqual([{ repo: "owner/a", status: "added", message: "dry-run" }]);
-    expect(r.agents.length).toBe(8);
+    expect(r.agents.length).toBe(10);
     const inv = await readInvocations();
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });

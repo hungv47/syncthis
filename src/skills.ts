@@ -14,11 +14,25 @@ import type { AgentId } from "./types.ts";
 // `plugin:skill` namespace was preventing.
 export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex", "cursor"];
 
-// The skill cohort: every supported agent that is NOT plugin-capable. These can
-// only receive the portable skill subset, via `npx skills add -a <agent>`.
-// Derived from the adapter registry so it tracks new agents automatically.
-export function skillCohort(): AgentId[] {
+// Agents that support skills (vercel-labs/skills) but have NO native MCP config to
+// sync, so they get no MCP adapter — they appear in the SKILL cohort only, never in
+// MCP sync or the plugin→MCP decomposition. Pi (badlogic/pi-mono) ships without MCP
+// by design ("No MCP"); its skills id is `pi`, skills land in ~/.pi/agent/skills.
+export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi"];
+
+// The MCP cohort: every MCP-syncable agent that is NOT plugin-capable. These are the
+// targets for the plugin→MCP decomposition (the plugin cohort gets a plugin's MCP
+// servers by installing the plugin). Derived from the adapter registry so it tracks
+// new MCP adapters automatically.
+export function mcpCohort(): AgentId[] {
   return adapters.map((a) => a.id).filter((id) => !PLUGIN_TARGET_AGENTS.includes(id));
+}
+
+// The skill cohort: every non-plugin agent that can receive skills via
+// `npx skills add -a <agent>`. That's the MCP cohort plus skills-only agents (Pi),
+// since skills reach more agents than native MCP sync does.
+export function skillCohort(): AgentId[] {
+  return [...new Set([...mcpCohort(), ...SKILL_ONLY_AGENTS])];
 }
 
 const CLAUDE_MARKETPLACES = "~/.claude/plugins/known_marketplaces.json";

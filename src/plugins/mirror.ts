@@ -30,6 +30,7 @@ import type {
 import {
   addSkillRepos,
   addSkillsFromPlugins,
+  mcpCohort,
   resolveInstalledRepoCoverage,
   resolvePluginSkillSources,
   skillCohort,
@@ -346,7 +347,8 @@ async function pushToSkillCohort(
 
 // Lift the primary's plugin-bundled MCP servers into the non-plugin agents' own MCP
 // config. The plugin cohort (Claude/Codex/Cursor) already gets these by installing
-// the plugin, so the target set is the skill cohort (the 8 non-plugin agents). Source
+// the plugin, so the target set is the MCP cohort (the non-plugin MCP-syncable
+// agents — skills-only agents like Pi are excluded; they have no MCP config). Source
 // paths come from Claude's plugin store, so only a Claude primary can supply them.
 // Additive and conflict-safe: each agent keeps every server it already has; a name
 // present with a DIFFERENT config is left untouched and reported as a conflict
@@ -357,7 +359,7 @@ async function pushPluginMcpToCohort(
   apply: boolean,
   onProgress?: (label: string, index: number, total: number) => void,
 ): Promise<MirrorMcpCohort> {
-  const agents = skillCohort();
+  const agents = mcpCohort();
   if (from !== "claude-code") {
     return {
       supported: false,

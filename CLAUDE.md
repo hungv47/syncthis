@@ -4,8 +4,8 @@ Guidance for Claude Code working in this repo. Mirrored to `AGENTS.md` for Codex
 
 ## What this is
 
-`syncthis` is a CLI that mirrors **MCP server configs** across 11 AI coding agents:
-**Claude Code, Cursor, Codex, Gemini CLI, Kimi CLI, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, GitHub Copilot CLI**.
+`syncthis` is a CLI that mirrors **MCP server configs** across 12 AI coding agents:
+**Claude Code, Cursor, Codex, Gemini CLI, Kimi CLI, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, GitHub Copilot CLI, Goose**. Skills additionally reach **Pi** (badlogic/pi-mono), which ships without native MCP by design, so it has no MCP adapter — it's a skills-only target.
 
 It is a sync layer, not an installer — it reads each agent's existing config, computes the union, writes the union back, and reports conflicts.
 
@@ -42,9 +42,10 @@ src/
     opencode.ts       → ~/.config/opencode/opencode.json (most divergent: `mcp` key, command-as-array, `environment`)
     openclaw.ts       → ~/.openclaw/openclaw.json (JSON5; nested `mcp.servers`; transport field)
     hermes.ts         → ~/.hermes/config.yaml (YAML; mcp_servers snake_case)
+    goose.ts          → ~/.config/goose/config.yaml (YAML; `extensions` map keyed by name, type-tagged stdio/streamable_http/sse; cmd/args/envs/uri field names; preserves built-in extensions)
     json-mcp.ts       → shared canonical JSON adapter factory (Cursor, Gemini, Kimi, Antigravity)
     text-mcp.ts       → shared text-format adapter factory
-    index.ts          → MCP adapter registry (all 11)
+    index.ts          → MCP adapter registry (all 12)
   plugins/            → plugin layer (claude ↔ codex only)
     claude.ts         → read (claude plugin list --json) + installPlugin (additive; no uninstall path)
     codex.ts          → read (codex plugin list, installed-only) + installPlugin (resolves bare name → name@marketplace; provisions; detects covered/name-mismatch → skills fallback)
@@ -53,7 +54,7 @@ src/
     shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeRepoSlug
     types.ts          → PluginAdapter interface (install only) + records
     index.ts          → plugin adapter registry ([claude, codex]) + listPlugins()
-  skills.ts           → surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add` (skill cohort = adapters − plugin cohort); `addSkillRepos` adds specific repos to specific agents (used by mirror's skills fallback + non-plugin cohort push)
+  skills.ts           → surface plugin-bundled skills to the non-plugin agents via `npx skills add`. Two cohorts: `mcpCohort()` = MCP adapters − plugin cohort (targets for plugin→MCP decomposition); `skillCohort()` = mcpCohort + SKILL_ONLY_AGENTS (skills-capable agents with no MCP adapter, e.g. Pi). `addSkillRepos` adds specific repos to specific agents (used by mirror's skills fallback + non-plugin cohort push)
   sync.ts             → core: read all → compute union → write back, plus runDirectional / runFanOut / runRemove
   doctor.ts           → MCP coverage + conflict report
   tui.ts              → interactive picker (@clack/prompts)
@@ -86,7 +87,7 @@ syncthis plugin list                         # read-only plugin inventory
 syncthis help
 ```
 
-`run`/`sync` does, in order: read all 11 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → (unless `--no-skills`) surface plugin-bundled skills to the 8 non-plugin agents via `npx skills add`, then run `npx skills update -y`. The skills passes are additive only. Plugin/cursor propagation is **not** part of `run` — it stays explicit in `mirror`.
+`run`/`sync` does, in order: read all 12 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → (unless `--no-skills`) surface plugin-bundled skills to the non-plugin agents (the skill cohort, which also includes skills-only agents like Pi) via `npx skills add`, then run `npx skills update -y`. The skills passes are additive only. Plugin/cursor propagation is **not** part of `run` — it stays explicit in `mirror`.
 
 `<from> <to>` is a destructive one-way MCP mirror: overwrites `to`'s servers with `from`'s. Shows a diff and prompts for confirmation; `--yes` skips the prompt.
 
@@ -105,7 +106,7 @@ Diff + confirm or `--yes`. A failed primary read aborts loudly (an empty primary
 1. **Removal is allowed only with explicit rails, and never for plugins.** Union `sync` never deletes — it is purely additive. The MCP removal command (`syncthis rm`) must require (a) an explicit scope flag (`--all`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` available to preview. The plugin `mirror` is **additive only** — there is no plugin-uninstall path anywhere (no `removePlugin`, no `--remove-stale`), so a mirror can never wipe an agent's plugins. There is no implicit deletion anywhere in the tool.
 2. **`.syncthis.bak` backup on first write.** Every target file gets a backup the first time syncthis writes to it. Tests assert this. Don't change the contract or the suffix.
 3. **Conflict policy (union sync): leave each agent's own copy untouched.** If the same server name has different configs in different agents (different env, command, args), `run`/`sync` does NOT pick a winner — it leaves each agent's existing version alone and reports the conflict. The user resolves by deleting the version they don't want and re-running sync.
-4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 11 adapters.
+4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 12 adapters.
 5. **Directional sync requires explicit confirmation.** `<from> <to>` is destructive (overwrites `to`). It must show a diff and prompt OR require `--yes` in non-interactive contexts. Never silently overwrite.
 6. **Claude per-project scope merge on read, top-level on write.** Claude stores MCP servers in two places: top-level `mcpServers` (user scope) and `projects.<path>.mcpServers` (per-project scope, the default for `claude mcp add`). The adapter reads both and merges; writes go to top-level only, leaving project scopes untouched so Claude's per-project behavior is preserved.
 
