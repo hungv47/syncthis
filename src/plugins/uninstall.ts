@@ -16,6 +16,7 @@
 
 import { pluginAdapters } from "./index.ts";
 import { claudePluginAdapter } from "./claude.ts";
+import { parsePluginId } from "./shell.ts";
 import type { PluginUninstallResult } from "./types.ts";
 import {
   listInstalledSkills,
@@ -89,27 +90,51 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
     (a) => !PLUGIN_UNINSTALL_AGENTS.includes(a) && !cohort.includes(a),
   );
 
+  // Each requested plugin is `name` or `name@marketplace`. A bare name targets every
+  // installed instance of that name; an explicit marketplace narrows to one — so a
+  // name installed from multiple marketplaces is never collapsed to an arbitrary pick.
+  const specs = pluginSet.map((p) => parsePluginId(p));
+  const recordMatches = (name: string, marketplace?: string) =>
+    specs.some((s) => s.name === name && (!s.marketplace || s.marketplace === marketplace));
+
   // --- Native plugin uninstall targets (Claude / Codex among the requested) ---
   const native: NativeUninstallTarget[] = [];
   for (const adapter of pluginAdapters) {
     if (!requested.includes(adapter.id)) continue;
     const read = await adapter.read();
-    for (const plugin of pluginSet) {
+    for (const spec of specs) {
       if (read.error) {
-        native.push({ agent: adapter.id, plugin, present: false, unreadable: read.error });
+        native.push({ agent: adapter.id, plugin: spec.name, marketplace: spec.marketplace, present: false, unreadable: read.error });
         continue;
       }
-      const rec = read.plugins.find((p) => p.name === plugin);
-      native.push({ agent: adapter.id, plugin, marketplace: rec?.marketplace, present: !!rec });
+      const matches = read.plugins.filter(
+        (p) => p.name === spec.name && (!spec.marketplace || p.marketplace === spec.marketplace),
+      );
+      if (matches.length === 0) {
+        native.push({ agent: adapter.id, plugin: spec.name, marketplace: spec.marketplace, present: false });
+      } else {
+        // One target per matched marketplace — uninstall every instance the spec
+        // names (a bare name from two marketplaces removes both, each qualified).
+        for (const rec of matches) {
+          native.push({ agent: adapter.id, plugin: spec.name, marketplace: rec.marketplace, present: true });
+        }
+      }
     }
   }
 
-  // --- Plugin-derived skill removal across the requested skill-cohort agents ---
-  const skillAgents = requested.filter((a) => cohort.includes(a));
+  // --- Plugin-derived skill removal ---
+  // Candidate agents = the skill cohort PLUS Codex. The mirror's fallback adds a
+  // plugin's skills to Codex via `npx skills add` when Codex can't load it as a
+  // plugin, so those flat skills must be removable here too. (A Codex-native plugin's
+  // skills are namespaced inside the plugin, not in the npx store, so the presence
+  // filter below won't match them — the native uninstall handles those.)
+  const skillRemovalAgents = [...new Set<AgentId>([...cohort, "codex"])];
+  const skillAgents = requested.filter((a) => skillRemovalAgents.includes(a));
   // Skill propagation is Claude-driven, so derived skills correspond to Claude's
   // installed plugins. Partition every Claude plugin's skill names into "to remove"
-  // (the plugins being uninstalled) vs "to keep" (every other still-installed plugin)
-  // so a name shared with a surviving plugin is never removed.
+  // (the records a requested spec matches) vs "to keep" (every other still-installed
+  // record — including a sibling marketplace not being removed) so a name shared with
+  // a surviving plugin is never removed.
   const claudeRead = await claudePluginAdapter.read();
   const claudePlugins = claudeRead.error ? [] : claudeRead.plugins;
   const removeNames = new Set<string>();
@@ -117,7 +142,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   await Promise.all(
     claudePlugins.map(async (rec) => {
       const names = await pluginSkillNames(rec.path);
-      const target = pluginSet.includes(rec.name);
+      const target = recordMatches(rec.name, rec.marketplace);
       for (const n of names) (target ? removeNames : keepNames).add(n);
     }),
   );

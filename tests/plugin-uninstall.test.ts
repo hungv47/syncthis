@@ -314,6 +314,54 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(uninstallHasChanges(r)).toBe(true); // native still has work
   });
 
+  // Regression (review P1): a name installed from multiple marketplaces must not be
+  // collapsed to one arbitrary marketplace — every instance is targeted, and an
+  // explicit `name@marketplace` scopes to just one.
+  test("a duplicate plugin name across marketplaces targets every instance, not an arbitrary one", async () => {
+    await installFakeClaude(
+      JSON.stringify([
+        { id: "foo@mkt-a", enabled: true, installPath: join(workDir, "plugins", "foo-a") },
+        { id: "foo@mkt-b", enabled: true, installPath: join(workDir, "plugins", "foo-b") },
+      ]),
+    );
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["claude-code"], apply: false });
+    const claudeTargets = r.native.filter((t) => t.agent === "claude-code" && t.present);
+    expect(claudeTargets.map((t) => t.marketplace).sort()).toEqual(["mkt-a", "mkt-b"]);
+  });
+
+  test("an explicit name@marketplace scopes to a single instance", async () => {
+    await installFakeClaude(
+      JSON.stringify([
+        { id: "foo@mkt-a", enabled: true, installPath: join(workDir, "plugins", "foo-a") },
+        { id: "foo@mkt-b", enabled: true, installPath: join(workDir, "plugins", "foo-b") },
+      ]),
+    );
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo@mkt-a"], agents: ["claude-code"], apply: false });
+    const claudeTargets = r.native.filter((t) => t.agent === "claude-code" && t.present);
+    expect(claudeTargets.map((t) => t.marketplace)).toEqual(["mkt-a"]);
+  });
+
+  // Regression (review P2): when the mirror put a plugin's skills onto Codex via the
+  // skills fallback (Codex couldn't load it natively), `plugin rm` must remove those
+  // flat skills from Codex too — not just the skill-cohort agents.
+  test("removes a plugin's fallback skills from Codex when scoped there", async () => {
+    const fooDir = join(workDir, "plugins", "foo");
+    await writePluginSkills(fooDir, ["alpha"]);
+    await installFakeClaude(JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]));
+    // Codex has NO native foo plugin (it was a skills-only/unloadable bundle)...
+    await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));
+    // ...but `npx skills` registered alpha for Codex (the mirror fallback) + OpenCode.
+    await installFakeNpx({ listJson: '[{"name":"alpha","agents":["Codex","OpenCode"]}]', removeExit: 0 });
+
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["codex", "opencode"], apply: true });
+    expect(r.native.find((t) => t.agent === "codex")?.present).toBe(false); // not native on codex
+    expect(r.skills.agents).toEqual(["codex", "opencode"]);
+    expect(r.skillResult?.status).toBe("removed");
+    expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a codex opencode -s alpha -y")).toBe(true);
+  });
+
   test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {
     await installFakeClaude(JSON.stringify([]));
     await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));
