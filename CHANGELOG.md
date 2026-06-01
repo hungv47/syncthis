@@ -2,7 +2,7 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] — 2026-06-01
 
 ### Added
 - **`plugin rm` — guarded plugin uninstall.** The only plugin-removal path (sync and mirror stay additive). `syncthis plugin rm <plugin…>` uninstalls each named plugin's native install from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`) — the "everywhere" reach matching how `mirror` spreads a plugin's content. Guarded like MCP `rm`: explicit scope (`--all` or `--agents <a,b,c>`), a diff before any write, TTY-confirm or `--yes`, and `--dry-run`. Each argument is `name` or `name@marketplace` — a bare name removes every installed instance (a name from two marketplaces is never collapsed to an arbitrary one); `@marketplace` scopes to one. Skill removal also reaches **Codex** when the mirror surfaced a plugin's skills there via the fallback. Over-removal guard: a skill another still-installed plugin record (incl. a sibling marketplace) provides is **kept**. `--keep-data` preserves Claude's plugin data dir. The interactive picker gains a matching checkbox flow (pick plugins → pick agents → confirm).
