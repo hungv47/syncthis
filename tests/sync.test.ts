@@ -442,6 +442,7 @@ describe("runDoctor", () => {
       "codex",
       "gemini-cli",
       "github-copilot",
+      "goose",
       "hermes-agent",
       "kimi-cli",
       "openclaw",
