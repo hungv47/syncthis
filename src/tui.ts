@@ -1,11 +1,12 @@
-import { intro, outro, select, multiselect, isCancel, cancel, log, note, spinner } from "@clack/prompts";
-import { listAgentIds, runDirectional, runSync, runSkillsOnly } from "./sync.ts";
+import { intro, outro, select, multiselect, text, isCancel, cancel, log, note, spinner } from "@clack/prompts";
+import { listAgentIds, runDirectional, runSync, runSkillsOnly, runRemove } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import { runMirror, mirrorHasChanges } from "./plugins/mirror.ts";
 import { listPlugins, pluginAdapters } from "./plugins/index.ts";
 import { buildPluginOverview } from "./plugins/overview.ts";
 import { runPluginUninstall, uninstallHasChanges } from "./plugins/uninstall.ts";
-import { skillCohort } from "./skills.ts";
+import { runPluginAdd, pluginAddHasWork } from "./plugins/add.ts";
+import { addSkillRepos, removeSkillNames, listInstalledSkills, skillCohort } from "./skills.ts";
 import type { AgentId } from "./types.ts";
 
 type PickerChoice =
@@ -13,6 +14,7 @@ type PickerChoice =
   | "mcp"
   | "skills"
   | "mirror"
+  | "manage"
   | "directional"
   | "doctor"
   | "plugin-list"
@@ -32,6 +34,7 @@ export async function showInteractivePicker(): Promise<void> {
   const options: Array<{ value: PickerChoice; label: string; hint?: string }> = [
     { value: "sync", label: "Sync everything  (recommended)", hint: "share MCP servers + skills across every agent — only adds" },
     { value: "mirror", label: "Copy plugins across agents", hint: "install one agent's plugins on the others; the rest get the skills — only adds" },
+    { value: "manage", label: "Add or remove capabilities", hint: "pick specific plugins / skills / MCP servers + agents to add or remove" },
     { value: "mcp", label: "MCP servers only", hint: "share MCP servers, skip the skills step" },
     { value: "skills", label: "Skills only", hint: "refresh skills via npx skills update" },
     { value: "directional", label: "Copy MCP from one agent to another  (advanced)", hint: "overwrites the destination — shows a diff, asks first" },
@@ -64,6 +67,9 @@ export async function showInteractivePicker(): Promise<void> {
         break;
       case "mirror":
         await doMirror();
+        break;
+      case "manage":
+        await doManage();
         break;
       case "directional":
         await doDirectional();
@@ -381,4 +387,206 @@ async function doDirectional() {
 
   await runDirectional({ from, to, apply: true });
   log.success(`wrote to ${to}`);
+}
+
+// Pick a set of agents (checkbox). Returns null on cancel (caller should return).
+async function pickAgents(known: AgentId[], message: string, initial?: AgentId[]): Promise<AgentId[] | null> {
+  const raw = await multiselect({
+    message,
+    options: known.map((a) => ({ value: a, label: a })),
+    initialValues: initial,
+    required: true,
+  });
+  if (isCancel(raw)) {
+    cancel("aborted.");
+    return null;
+  }
+  return raw as AgentId[];
+}
+
+async function confirmYes(message: string): Promise<boolean> {
+  const c = await select({
+    message,
+    options: [
+      { value: "no", label: "no" },
+      { value: "yes", label: "yes" },
+    ],
+  });
+  if (isCancel(c) || c === "no") {
+    cancel("aborted.");
+    return false;
+  }
+  return true;
+}
+
+// Unified add/remove control surface: capability → operation → items → agents.
+async function doManage() {
+  const capRaw = await select({
+    message: "manage which capability?",
+    options: [
+      { value: "skill", label: "Skills", hint: "add a repo's skills, or remove installed skills" },
+      { value: "plugin", label: "Plugins", hint: "add a plugin to chosen agents, or uninstall" },
+      { value: "mcp", label: "MCP servers", hint: "remove a server from chosen agents (add an MCP via your agent's own CLI, then Sync)" },
+    ],
+  });
+  if (isCancel(capRaw)) return cancel("aborted.");
+  const cap = capRaw as "skill" | "plugin" | "mcp";
+
+  const ops =
+    cap === "mcp"
+      ? [{ value: "remove", label: "Remove" }]
+      : [
+          { value: "add", label: "Add" },
+          { value: "remove", label: "Remove" },
+        ];
+  const opRaw = await select({ message: `${cap}: add or remove?`, options: ops });
+  if (isCancel(opRaw)) return cancel("aborted.");
+  const op = opRaw as "add" | "remove";
+
+  if (cap === "skill") return op === "add" ? manageSkillAdd() : manageSkillRemove();
+  if (cap === "plugin") return op === "add" ? managePluginAdd() : doPluginUninstall();
+  return manageMcpRemove();
+}
+
+async function manageSkillAdd() {
+  const repoRaw = await text({
+    message: "skill repo(s) to add (comma-separated, e.g. vercel-labs/agent-skills)",
+    placeholder: "owner/repo, owner/other",
+  });
+  if (isCancel(repoRaw)) return cancel("aborted.");
+  const repos = String(repoRaw).split(",").map((s) => s.trim()).filter(Boolean);
+  if (repos.length === 0) return cancel("no repos given.");
+  const agents = await pickAgents([...listAgentIds(), "pi"], "add these skills to which agents?");
+  if (!agents) return;
+  const s = spinner();
+  s.start("npx skills add…");
+  const results = await addSkillRepos(repos, agents).catch((e) => {
+    s.stop("Add failed.");
+    throw e;
+  });
+  s.stop("Done.");
+  const failed = results.filter((r) => r.status === "failed");
+  const added = results.length - failed.length;
+  for (const f of failed) log.error(`${f.repo}: ${f.message ?? "failed"}`);
+  if (failed.length) log.error(`${added} repo(s) added, ${failed.length} failed`);
+  else log.success(`added ${added} repo(s) to ${agents.length} agent(s)`);
+}
+
+async function manageSkillRemove() {
+  const installed = await listInstalledSkills();
+  if (!installed || installed.length === 0) {
+    log.info("no installed skills found (or `npx skills list` unavailable).");
+    return;
+  }
+  const namesRaw = await multiselect({
+    message: "remove which skill(s)?",
+    options: installed.map((s) => ({ value: s.name, label: s.name, hint: s.agents.join(", ") })),
+    required: true,
+  });
+  if (isCancel(namesRaw)) return cancel("aborted.");
+  const names = namesRaw as string[];
+  const agents = await pickAgents([...listAgentIds(), "pi"], "remove from which agents?");
+  if (!agents) return;
+  if (!(await confirmYes(`remove ${names.length} skill(s) from ${agents.length} agent(s)?`))) return;
+  const s = spinner();
+  s.start("npx skills remove…");
+  const r = await removeSkillNames(names, agents).catch((e) => {
+    s.stop("Remove failed.");
+    throw e;
+  });
+  s.stop("Done.");
+  if (r.status === "failed") log.error(r.message ?? "failed");
+  else log.success(`removed ${r.skills.length} skill(s) from ${r.agents.length} agent(s)`);
+}
+
+async function managePluginAdd() {
+  const reads = await listPlugins();
+  const names = [...new Set(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name))))].sort();
+  if (names.length === 0) {
+    log.info("no plugins installed on claude-code/codex to add from.");
+    return;
+  }
+  const pickRaw = await multiselect({
+    message: "add which plugin(s)? (source: claude-code)",
+    options: names.map((n) => ({ value: n, label: n })),
+    required: true,
+  });
+  if (isCancel(pickRaw)) return cancel("aborted.");
+  const plugins = pickRaw as string[];
+  // Targets = every actionable agent except the source.
+  const targets = [...new Set<AgentId>([...pluginAdapters.map((a) => a.id), "cursor", ...skillCohort()])].filter((a) => a !== "claude-code");
+  const agents = await pickAgents(targets, "add to which agents?");
+  if (!agents) return;
+  const preview = await runPluginAdd({ plugins, agents, apply: false });
+  if (preview.sourceError) {
+    log.error(`can't read claude-code (the source): ${preview.sourceError}`);
+    return;
+  }
+  if (preview.notFound.length) log.warn(`not installed on claude-code (the source): ${preview.notFound.join(", ")}`);
+  if (!pluginAddHasWork(preview)) {
+    log.success("nothing to do.");
+    return;
+  }
+  if (!(await confirmYes("apply? installs via native CLIs + npx (network), may register Codex marketplaces."))) return;
+  const s = spinner();
+  s.start("Adding…");
+  const applied = await runPluginAdd({
+    plugins,
+    agents,
+    apply: true,
+    onProgress: (label, i, total) => s.message(`${label}  (${i}/${total})`),
+  }).catch((e) => {
+    s.stop("Add failed.");
+    throw e;
+  });
+  s.stop("Done.");
+  let ok = 0;
+  let failed = 0;
+  for (const ins of applied.installs) ins.status === "failed" ? (failed += 1) : (ok += 1);
+  for (const sk of applied.skills) sk.status === "failed" ? (failed += 1) : (ok += 1);
+  for (const c of applied.cursor?.results ?? []) c.status === "failed" ? (failed += 1) : (ok += 1);
+  for (const m of applied.mcp) {
+    if (m.status === "failed") failed += 1;
+    else if (m.added.length) ok += 1;
+  }
+  if (failed) log.error(`${ok} action(s) ok, ${failed} failed — run \`syncthis add plugin\` for detail`);
+  else log.success(`add complete: ${ok} action(s).`);
+}
+
+async function manageMcpRemove() {
+  const doc = await runDoctor();
+  const names = doc.coverage.map((c) => c.name);
+  if (names.length === 0) {
+    log.info("no MCP servers configured in any agent.");
+    return;
+  }
+  const pickRaw = await multiselect({
+    message: "remove which MCP server(s)?",
+    options: names.map((n) => ({ value: n, label: n })),
+    required: true,
+  });
+  if (isCancel(pickRaw)) return cancel("aborted.");
+  const servers = pickRaw as string[];
+  const agents = await pickAgents(listAgentIds(), "remove from which agents?");
+  if (!agents) return;
+  if (!(await confirmYes(`remove ${servers.length} server(s) from ${agents.length} agent(s)?`))) return;
+  const s = spinner();
+  s.start("Removing…");
+  let changed = 0;
+  let failed = 0;
+  try {
+    for (const name of servers) {
+      const r = await runRemove({ name, agents, apply: true });
+      for (const w of r.writes) {
+        if (w.status === "failed") failed += 1;
+        else if (w.status === "synced") changed += 1;
+      }
+    }
+  } catch (e) {
+    s.stop("Remove failed.");
+    throw e;
+  }
+  s.stop("Done.");
+  if (failed) log.error(`${changed} write(s), ${failed} failed`);
+  else log.success(`removed (${changed} write(s)) across ${agents.length} agent(s)`);
 }

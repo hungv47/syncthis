@@ -90,6 +90,14 @@ syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # propagate prima
 syncthis plugin list                        # cross-agent plugin overview (read-only)
 syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
                                             # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
+
+# Selective add / remove — pick the exact items + agents
+syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
+syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]   # source = claude-code
+syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
+syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
+syncthis rm  plugin <name…>   …             # alias of `plugin rm`
+# (no `add mcp` — syncthis mirrors MCP servers, it doesn't install them)
 syncthis help
 ```
 

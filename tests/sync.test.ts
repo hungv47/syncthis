@@ -412,6 +412,22 @@ describe("runSync (cross-pollinate)", () => {
     expect(cursor.mcpServers).toEqual({});
   });
 
+  test("remove with an agent scope only touches the named agents", async () => {
+    await writeAgentJson(".claude.json", { gh: STDIO, lin: HTTP });
+    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+
+    // Scope to cursor only — Claude must keep gh.
+    const preview = await runRemove({ name: "gh", agents: ["cursor"], apply: false });
+    expect(preview.writes.map((w) => w.agent)).toEqual(["cursor"]); // claude not in the write set
+    const applied = await runRemove({ name: "gh", agents: ["cursor"], apply: true });
+    expect(applied.writes.some((w) => w.status === "failed")).toBe(false);
+
+    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
+    expect(claude.mcpServers).toEqual({ gh: STDIO, lin: HTTP }); // untouched
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers).toEqual({}); // gh removed
+  });
+
   test("remove deletes Claude project-scoped servers too", async () => {
     await Bun.write(
       join(workDir, ".claude.json"),

@@ -53,6 +53,7 @@ src/
     mirror.ts         → primary → every other agent: codex native installs (provision on by default) + cursor push (npx plugins) + skills fallback for bundles a target can't load + skills→8 non-plugin agents (npx skills) + bundled-MCP→8 non-plugin agents (lifted into their MCP config, additive + conflict-safe). Additive only — no removes.
     overview.ts       → unified cross-agent plugin overview (buildPluginOverview): native plugins (claude/codex) + cursor write-only note + per-non-plugin-agent plugin-derived skills (skills list ∩ derived names). Read-only.
     uninstall.ts      → guarded plugin uninstall (runPluginUninstall): native uninstall on claude/codex + surfaced-skill removal across the scoped skill-cohort agents. Over-removal guard: a skill another installed plugin still provides is kept. Preview/apply; never reached by sync or mirror.
+    add.ts            → scoped plugin add (runPluginAdd): a narrowed mirror — push CHOSEN plugins to CHOSEN agents (source = claude). Native install on codex, cursor push, skills + lifted MCP to chosen non-plugin agents. Additive; reuses installPlugin's resolve/provision/fallback. Preview/apply.
     shell.ts          → run() subprocess helper, parsePluginId, isSafeIdentifier, isSafeSkillName, isSafeRepoSlug
     types.ts          → PluginAdapter interface (installPlugin + uninstallPlugin) + records
     index.ts          → plugin adapter registry ([claude, codex]) + listPlugins()
@@ -88,6 +89,14 @@ syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]  # plugin mirror 
 syncthis plugin list                         # read-only cross-agent plugin overview
 syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
                                              # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
+
+# selective add / remove — pick items + agents (verb-noun grammar, additive `add`, guarded `rm`)
+syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
+syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]   # source = claude-code
+syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
+syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
+syncthis rm  plugin <name…>   …              # alias of `plugin rm`
+# no `add mcp` — syncthis mirrors MCP servers, it doesn't install them
 syncthis help
 ```
 
@@ -109,9 +118,11 @@ Diff + confirm or `--yes`. A failed primary read aborts loudly (an empty primary
 
 `plugin rm <plugin…>` is the **only** plugin-removal path and is reached only here (never by sync or mirror). It uninstalls each named plugin's native install from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`). Each argument is `name` or `name@marketplace`: a bare name targets **every** installed instance of that name (a name installed from two marketplaces is never collapsed to an arbitrary one), and `name@marketplace` scopes to a single instance. Skill removal also covers **Codex** when the mirror surfaced a plugin's skills there via the `npx skills add` fallback (Codex couldn't load it natively) — a Codex-*native* plugin's skills are namespaced inside the plugin and aren't in the npx store, so they're left to the native uninstall, not double-removed. Scope is explicit (`--all` or `--agents <a,b,c>`); it prints a diff, confirms in TTY or needs `--yes`, and supports `--dry-run`. Over-removal guard: a skill name another still-installed plugin record also provides (including a sibling marketplace not being removed) is **kept** (syncthis can't see hand-added non-plugin skills sharing a name, so the diff lists exact names). `--keep-data` preserves Claude's plugin data dir. Cursor can't be uninstalled (write-only) and is reported as such.
 
+The **selective add/remove grammar** (`add`/`rm <skill|plugin|mcp>`) is a thin selection layer over existing primitives: `add skill`→`addSkillRepos`, `add plugin`→`runPluginAdd`, `rm skill`→`removeSkillNames`, `rm mcp`→`runRemove` (with an agent subset), `rm plugin`→`runPluginUninstall`. `add` is additive (no confirm; `--dry-run`); every `rm` keeps the removal rails (explicit scope, diff, confirm/`--yes`, `--dry-run`). There is **no `add mcp`** — syncthis mirrors MCP servers, it does not install them, so MCP is sync + remove only. The same flows are exposed interactively under the TUI's "Add or remove capabilities" entry (capability → operation → item checkbox → agent checkbox → confirm).
+
 ## Sacred elements — do not change without explicit approval
 
-1. **Removal is allowed only with explicit rails.** Union `sync` and the plugin `mirror` never delete — they are purely additive (a mirror has no `removePlugin`/`--remove-stale`, so it can never wipe an agent's plugins). The two explicit removal commands — MCP `syncthis rm <server>` and plugin `syncthis plugin rm <plugin…>` — must each require (a) an explicit scope flag (`--all` or, for `plugin rm`, `--agents <list>`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` to preview. `plugin rm` additionally keeps a skill another installed plugin still provides (no collateral skill removal). There is no *implicit* deletion anywhere in the tool — removal only ever happens through these two guarded commands.
+1. **Removal is allowed only with explicit rails.** Union `sync` and the plugin `mirror` never delete — they are purely additive (a mirror has no `removePlugin`/`--remove-stale`, so it can never wipe an agent's plugins). The explicit removal commands — MCP (`syncthis rm <server>` / `rm mcp <server…>`), plugin (`syncthis plugin rm` / `rm plugin`), and skill (`rm skill`) — must each require (a) an explicit scope (`--all` or `--agents <list>`), (b) a diff printed before any write, (c) interactive confirmation in TTY or `--yes` in non-interactive mode, and (d) `--dry-run` to preview. `--all` and `--agents` are mutually exclusive (both → error, never a silent winner). `plugin rm` additionally keeps a skill another installed plugin still provides (no collateral skill removal). There is no *implicit* deletion anywhere in the tool — removal only ever happens through these guarded commands.
 2. **`.syncthis.bak` backup on first write.** Every target file gets a backup the first time syncthis writes to it. Tests assert this. Don't change the contract or the suffix.
 3. **Conflict policy (union sync): leave each agent's own copy untouched.** If the same server name has different configs in different agents (different env, command, args), `run`/`sync` does NOT pick a winner — it leaves each agent's existing version alone and reports the conflict. The user resolves by deleting the version they don't want and re-running sync.
 4. **Secret-bearing files clamped to `0600`.** Any agent file written by syncthis that may contain API keys/tokens has its permissions clamped on write. Don't relax this. Applies to all 12 adapters.

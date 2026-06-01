@@ -260,14 +260,23 @@ export async function runFanOut(opts: { from: AgentId; dryRun?: boolean; apply: 
   return { from: opts.from, fromRead, targets, applied: opts.apply && !opts.dryRun };
 }
 
-export async function runRemove(opts: { name: string; dryRun?: boolean; apply: boolean }): Promise<RemoveReport> {
+export async function runRemove(opts: {
+  name: string;
+  // When set, remove only from these agents (still an explicit scope — the caller's
+  // `--agents <list>`). Unset = every MCP agent (the `--all` scope). Either way the
+  // command is gated by a diff + confirm/--yes upstream.
+  agents?: AgentId[];
+  dryRun?: boolean;
+  apply: boolean;
+}): Promise<RemoveReport> {
   const name = opts.name.trim();
   if (!name) throw new Error("syncthis: server name is required");
 
-  const reads = await Promise.all(adapters.map((a) => a.read()));
+  const scoped = opts.agents ? adapters.filter((a) => opts.agents!.includes(a.id)) : adapters;
+  const reads = await Promise.all(scoped.map((a) => a.read()));
   const readsByAgent = new Map(reads.map((r) => [r.agent, r]));
   const writes = await Promise.all(
-    adapters.map(async (adapter): Promise<AdapterWriteResult> => {
+    scoped.map(async (adapter): Promise<AdapterWriteResult> => {
       const read = readsByAgent.get(adapter.id)!;
       if (read.error) {
         return { agent: adapter.id, path: read.path, status: "failed", message: read.error };

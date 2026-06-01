@@ -29,6 +29,16 @@ usage:
                                              one-way mirror MCP from one agent to every other agent
   syncthis rm <server> --all [--yes] [--dry-run]
                                              remove one MCP server from every supported agent
+
+  selective add / remove (pick items + agents):
+  syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
+  syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]
+                                             (plugin must be installed on claude-code, the source)
+  syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
+  syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
+  syncthis rm  plugin <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
+                                             (no "add mcp" — syncthis mirrors MCP servers, it
+                                             doesn't install them)
   syncthis doctor                            MCP coverage + conflict report
   syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]
                                              additive: make <primary>'s plugin content reachable on
@@ -542,23 +552,121 @@ async function cmdFanOut(argv: string[]) {
   exitIfFailed(applied.targets.map((t) => t.write).filter((w): w is NonNullable<typeof w> => !!w));
 }
 
-async function cmdRemove(argv: string[]) {
-  const { runRemove } = await import("../src/sync.ts");
-  const { values, positionals } = parse(argv);
-  const name = positionals[0];
-  if (!name) {
-    console.error(red("server name is required"));
+// Shared scope resolver for the add/rm grammar. `--all` and `--agents` are mutually
+// exclusive; one is required (the user must say exactly where). Validates against the
+// command's known agent set.
+type ParsedValues = ReturnType<typeof parse>["values"];
+function resolveAgentScope(values: ParsedValues, known: AgentId[], label: string): AgentId[] {
+  const hasAgents = typeof values.agents === "string" && (values.agents as string).trim().length > 0;
+  if (values.all && hasAgents) {
+    console.error(red(`${label}: pass either --all or --agents <a,b,c>, not both`));
     process.exit(2);
   }
-  if (!values.all) {
-    console.error(red("remove requires --all"));
-    process.exit(2);
+  if (values.all) return known;
+  if (hasAgents) {
+    const wanted = (values.agents as string).split(",").map((s) => s.trim()).filter(Boolean);
+    const bad = wanted.filter((a) => !known.includes(a as AgentId));
+    if (bad.length) {
+      console.error(red(`unknown agent(s): ${bad.join(", ")}`));
+      console.error(dim(`known agents: ${known.join(", ")}`));
+      process.exit(2);
+    }
+    return wanted as AgentId[];
   }
+  console.error(red(`${label} requires a scope: --all or --agents <a,b,c>`));
+  process.exit(2);
+}
 
+// `syncthis add <skill|plugin> <items…> --agents <list>|--all` — additive (no confirm;
+// supports --dry-run). MCP has no add (syncthis is a sync layer, not an installer).
+async function cmdAdd(argv: string[]) {
+  const noun = argv[0];
+  if (noun === "skill" || noun === "skills") return cmdAddSkill(argv.slice(1));
+  if (noun === "plugin" || noun === "plugins") return cmdAddPlugin(argv.slice(1));
+  if (noun === "mcp") {
+    console.error(red("there's no `add mcp` — syncthis mirrors MCP servers, it doesn't install them. Add a server with `claude mcp add`/mcpm, then `syncthis sync`."));
+    process.exit(2);
+  }
+  console.error(red(`add: say what to add — \`add skill <repo…>\` or \`add plugin <name…>\` (with --all | --agents <a,b,c>)`));
+  process.exit(2);
+}
+
+async function cmdAddSkill(argv: string[]) {
+  const { addSkillRepos } = await import("../src/skills.ts");
+  const { listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  if (positionals.length === 0) {
+    console.error(red("add skill: name at least one repo (e.g. vercel-labs/agent-skills)"));
+    process.exit(2);
+  }
+  const agents = resolveAgentScope(values, [...listAgentIds(), "pi"] as AgentId[], "add skill");
   const dryRun = !!values["dry-run"];
-  const preview = await runRemove({ name, apply: false });
-  printRemove(preview);
-  const willChange = preview.writes.some((w) => w.status === "synced");
+  console.log(`Add skills ${positionals.map((p) => green(p)).join(", ")} → ${agents.join(", ")}${dryRun ? dim(" (dry-run)") : ""}`);
+  const results = await addSkillRepos(positionals, agents, { dryRun });
+  let added = 0;
+  let failed = 0;
+  for (const r of results) {
+    if (r.status === "failed") { failed += 1; row("failed", "skills", r.repo, r.message); }
+    else { added += 1; row("synced", "skills", r.repo, dryRun ? "dry-run" : r.status === "skipped" ? (r.message ?? "no skills") : "added"); }
+  }
+  if (failed > 0) process.exit(1);
+}
+
+async function cmdAddPlugin(argv: string[]) {
+  const { runPluginAdd, pluginAddHasWork } = await import("../src/plugins/add.ts");
+  const { listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  if (positionals.length === 0) {
+    console.error(red("add plugin: name at least one plugin (must be installed on claude-code, the source)"));
+    process.exit(2);
+  }
+  const agents = resolveAgentScope(values, [...listAgentIds(), "pi"] as AgentId[], "add plugin");
+  const dryRun = !!values["dry-run"];
+  const preview = await runPluginAdd({ plugins: positionals, agents, apply: false });
+  printPluginAdd(preview, true);
+  if (preview.sourceError) {
+    console.error(red(`cannot read claude-code (the source): ${preview.sourceError}`));
+    process.exit(1);
+  }
+  if (!pluginAddHasWork(preview)) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    console.log(dim("dry-run — no changes applied."));
+    return;
+  }
+  console.log(dim("installing — may register Codex marketplaces and run npx (network)…"));
+  const onProgress = (label: string, i: number, total: number) =>
+    process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
+  const applied = await runPluginAdd({ plugins: positionals, agents, apply: true, onProgress });
+  const failed = printPluginAdd(applied, false);
+  if (failed > 0) process.exit(1);
+}
+
+// `syncthis rm <mcp|skill|plugin> <items…>`. A bare `rm <server> --all` (no noun)
+// stays MCP, for back-compat with the original single-server remove.
+async function cmdRm(argv: string[]) {
+  const noun = argv[0];
+  if (noun === "skill" || noun === "skills") return cmdRmSkill(argv.slice(1));
+  if (noun === "plugin" || noun === "plugins") return cmdPluginRemove(argv.slice(1));
+  if (noun === "mcp") return cmdRmMcp(argv.slice(1));
+  return cmdRmMcp(argv); // legacy: `rm <server> --all`
+}
+
+async function cmdRmMcp(argv: string[]) {
+  const { runRemove, listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  if (positionals.length === 0) {
+    console.error(red("rm mcp: name at least one server"));
+    process.exit(2);
+  }
+  const agents = resolveAgentScope(values, listAgentIds(), "rm mcp");
+  const dryRun = !!values["dry-run"];
+  const previews = [];
+  for (const name of positionals) previews.push(await runRemove({ name, agents, apply: false }));
+  for (const p of previews) printRemove(p);
+  const willChange = previews.some((p) => p.writes.some((w) => w.status === "synced"));
   if (!willChange) {
     console.log(dim("nothing to do."));
     return;
@@ -568,9 +676,54 @@ async function cmdRemove(argv: string[]) {
     return;
   }
   await confirmDestructive(!!values.yes);
-  const applied = await runRemove({ name, apply: true });
-  printRemove(applied);
-  exitIfFailed(applied.writes);
+  const writes = [];
+  for (const name of positionals) {
+    const applied = await runRemove({ name, agents, apply: true });
+    printRemove(applied);
+    writes.push(...applied.writes);
+  }
+  exitIfFailed(writes);
+}
+
+async function cmdRmSkill(argv: string[]) {
+  const { removeSkillNames, listInstalledSkills } = await import("../src/skills.ts");
+  const { listAgentIds } = await import("../src/sync.ts");
+  const { values, positionals } = parse(argv);
+  if (positionals.length === 0) {
+    console.error(red("rm skill: name at least one skill"));
+    process.exit(2);
+  }
+  const agents = resolveAgentScope(values, [...listAgentIds(), "pi"] as AgentId[], "rm skill");
+  const dryRun = !!values["dry-run"];
+
+  // Preview: which requested skills actually live on which scoped agents.
+  const installed = await listInstalledSkills();
+  console.log(`Remove skills ${positionals.map((p) => green(p)).join(", ")} from ${agents.join(", ")}:`);
+  let present = false;
+  if (installed) {
+    for (const name of positionals) {
+      const hit = installed.find((s) => s.name === name);
+      const on = hit ? hit.agents.filter((a) => agents.includes(a)) : [];
+      if (on.length) { present = true; console.log(`  ${red("-")} ${name} ${dim(`(on ${on.join(", ")})`)}`); }
+      else console.log(`  ${dim("·")} ${name} ${dim("not installed on the scoped agents")}`);
+    }
+  } else {
+    present = true; // can't read the list — proceed and let the CLI report per agent
+    console.log(dim("  (couldn't read `npx skills list` — proceeding by name)"));
+  }
+  if (!present) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    console.log(dim("dry-run — no changes applied."));
+    return;
+  }
+  await confirmDestructive(!!values.yes);
+  const r = await removeSkillNames(positionals, agents);
+  if (r.status === "failed") { row("failed", "skills", "", r.message); process.exit(1); }
+  else if (r.status === "skipped") row("skipped", "skills", "", r.message);
+  else row("synced", "skills", "", `removed ${r.skills.length} skill(s) from ${r.agents.length} agent(s)`);
 }
 
 async function cmdDirectional(from: string, to: string, argv: string[]) {
@@ -673,8 +826,38 @@ function fanOutHasChanges(r: import("../src/sync.ts").FanOutReport): boolean {
 }
 
 function printRemove(r: import("../src/sync.ts").RemoveReport) {
-  console.log(`Remove MCP server ${green(r.name)} from all supported agents:`);
+  console.log(`Remove MCP server ${green(r.name)} from ${r.writes.length} agent(s):`);
   for (const write of r.writes) row(write.status, write.agent, write.path, write.message);
+}
+
+function printPluginAdd(r: import("../src/plugins/add.ts").PluginAddReport, preview: boolean): number {
+  const targets = r.requestedAgents.filter((a) => a !== "claude-code");
+  console.log(`${preview ? "Add" : "Added"} ${r.plugins.map((p) => green(p)).join(", ")} → ${targets.join(", ") || dim("(no targets)")} ${dim("(source: claude-code)")}`);
+  for (const n of r.notFound) row("missing", "claude-code", n, "not installed on the source");
+  let failed = 0;
+  for (const ins of r.installs) {
+    if (ins.status === "failed") { failed += 1; row("failed", ins.agent, ins.target, ins.message); }
+    else if (ins.status === "present") row("synced", ins.agent, ins.target, "already present");
+    else if (ins.status === "installed") row("synced", ins.agent, ins.target, preview ? "would install" : "installed");
+    else if (ins.status === "skipped" && !ins.skillsFallbackRepo) row("skipped", ins.agent, ins.target, ins.message); // fallback shown under skills
+  }
+  if (r.cursor) {
+    for (const res of r.cursor.results) {
+      if (res.status === "failed") { failed += 1; row("failed", "cursor", res.repo, res.message); }
+      else row("synced", "cursor", res.repo, "installed (npx plugins)");
+    }
+    if (preview) for (const repo of r.cursor.repos) row("synced", "cursor", repo, "would push");
+  }
+  for (const s of r.skills) {
+    if (s.status === "failed") { failed += 1; row("failed", "skills", s.repo, s.message); }
+    else row("synced", "skills", s.repo, preview ? "would add" : s.status === "skipped" ? (s.message ?? "no skills") : "added");
+  }
+  for (const m of r.mcp) {
+    if (m.status === "failed") { failed += 1; row("failed", m.agent, "", `mcp: ${m.message ?? "failed"}`); }
+    else if (m.added.length) row("synced", m.agent, "", `${preview ? "would add " : "+"}${m.added.length} mcp: ${m.added.join(", ")}`);
+    if (m.conflicts.length) row("drift", m.agent, "", `${m.conflicts.length} mcp conflict(s) left untouched: ${m.conflicts.join(", ")}`);
+  }
+  return failed;
 }
 
 async function confirmDestructive(yes: boolean) {
@@ -936,7 +1119,8 @@ async function main() {
   if (cmd === "doctor") return cmdDoctor();
   if (cmd === "mirror") return cmdMirror(rest);
   if (cmd === "from") return cmdFanOut(rest);
-  if (cmd === "rm" || cmd === "remove") return cmdRemove(rest);
+  if (cmd === "add") return cmdAdd(rest);
+  if (cmd === "rm" || cmd === "remove") return cmdRm(rest);
   if (cmd === "plugin" || cmd === "plugins") return cmdPlugin(rest);
 
   // Directional: two positional agent IDs.
