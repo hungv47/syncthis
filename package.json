@@ -1,7 +1,7 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.9.4",
-  "description": "Sync MCP servers across 11 AI coding agents — Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes. Mirror plugins (Claude ↔ Codex + Cursor). Skills delegated to npx skills. Runs on Node — `npx @hungv47/syncthis run`.",
+  "version": "0.10.0",
+  "description": "Sync MCP servers across 12 AI coding agents — Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes, Goose. Mirror plugins (Claude ↔ Codex + Cursor) and decompose them into skills + MCP for every other agent. Skills also reach Pi. Runs on Node — `npx @hungv47/syncthis run`.",
   "type": "module",
   "license": "MIT",
   "author": "Le Vinh Hung <levinhhungg@gmail.com>",
@@ -29,6 +29,7 @@
     "github-copilot",
     "openclaw",
     "hermes",
+    "goose",
     "ai-agents",
     "ai-tools",
     "cli",

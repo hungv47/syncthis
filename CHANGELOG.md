@@ -2,6 +2,16 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.10.0] — 2026-06-01
+
+### Added
+- **`mirror` now decomposes a plugin's bundled MCP servers, not just its skills.** A Claude plugin can bundle MCP servers (a root `.mcp.json` or a manifest `mcpServers` field). Previously `mirror` surfaced only the bundled *skills* to the non-plugin agents and silently dropped those servers. Now it lifts them into each non-plugin agent's own MCP config too — `${CLAUDE_PLUGIN_ROOT}` resolved to the plugin's install dir, servers that still need a Claude-only variable skipped rather than written broken. Additive and conflict-safe: a server name already present with a different config is left untouched and reported (same policy as union sync). Claude primary only. So one `syncthis mirror claude-code` now makes a plugin's full portable content (skills **and** MCP) reachable everywhere, not just on the plugin-capable agents.
+- **Goose support — the 12th MCP-sync agent.** New adapter for `~/.config/goose/config.yaml` (YAML `extensions`). Maps canonical MCP to Goose's field names (`cmd`/`args`/`envs`/`uri`), type-tags stdio/streamable_http/sse, and preserves Goose's built-in extensions (`developer`, `memory`, …) untouched. Goose gets union MCP sync, plugin→MCP decomposition, and skills automatically. Honors `XDG_CONFIG_HOME` exactly as Goose does.
+- **Pi as a skills-only target.** Pi (badlogic/pi-mono) ships without native MCP by design, so it has no MCP adapter — but it now receives skills via the cohort (`npx skills add -a pi`).
+
+### Changed
+- **Skill cohort and MCP cohort are now distinct.** `mcpCohort()` = the non-plugin agents that have a native MCP adapter (targets for plugin→MCP decomposition); `skillCohort()` = that set plus skills-only agents like Pi. Skills reach more agents than native MCP sync does, and the two no longer have to be the same list.
+
 ## [0.9.4] — 2026-05-31
 
 ### Fixed
