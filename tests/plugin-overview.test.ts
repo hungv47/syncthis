@@ -131,6 +131,30 @@ describe("buildPluginOverview", () => {
     expect(o.derived.find((d) => d.agent === "kimi-cli")?.skills).toEqual([]);
   });
 
+  // Regression (Claude review P3): the overview must match derived skills by the same
+  // name+slug identity the removal path uses, so a skill whose frontmatter name differs
+  // from its install slug is still shown (not under-reported as 0).
+  test("matches a derived skill by install slug when it differs from the frontmatter name", async () => {
+    const loc = join(workDir, "mp", "mkt");
+    await mkdir(join(loc, "skills", "convex-best-practices"), { recursive: true });
+    await writeFile(join(loc, "skills", "convex-best-practices", "SKILL.md"), "---\nname: Convex Best Practices\n---\n");
+    const dir = join(workDir, ".claude", "plugins");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "known_marketplaces.json"),
+      JSON.stringify({ mkt: { source: { source: "github", repo: "owner/foo" }, installLocation: loc } }),
+    );
+    await installFakes({
+      claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: loc }]),
+      codexList: codexTable([]),
+      // `skills list` reports the SLUG, not the spaced frontmatter name.
+      skillsListJson: '[{"name":"convex-best-practices","agents":["OpenCode"]}]',
+    });
+    const o = await buildPluginOverview();
+    const opencode = o.derived.find((d) => d.agent === "opencode");
+    expect(opencode?.skills.map((s) => s.name)).toEqual(["convex-best-practices"]);
+  });
+
   test("skillsReadable false leaves derived blank but still lists native plugins", async () => {
     await installFakes({
       claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: "/x/foo" }]),

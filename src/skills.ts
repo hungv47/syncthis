@@ -238,16 +238,19 @@ export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
 
 export type PluginDerivedSkills = { repo: string; marketplace: string; names: string[] };
 
-// The skill names contributed by each of Claude's skill-bearing plugin marketplaces.
-// This is the "plugins, expressed as skills" set — what the mirror surfaces to the
-// non-plugin agents, and what `plugin rm` removes from them. Local-only (no network).
+// The skill identities contributed by each of Claude's skill-bearing plugin
+// marketplaces. This is the "plugins, expressed as skills" set the overview matches
+// against `npx skills list`. `names` carries BOTH the frontmatter name and the leaf
+// dir slug per skill (via pluginSkillIdentities) — the same identity resolution the
+// removal path uses — so a skill whose frontmatter name differs from its install slug
+// is still matched and shown, not under-reported. Local-only (no network).
 export async function resolvePluginDerivedSkills(): Promise<PluginDerivedSkills[]> {
   const sources = await resolvePluginSkillSources();
   return Promise.all(
     sources.map(async (s) => ({
       repo: s.repo,
       marketplace: s.marketplace,
-      names: (await repoSkillNames(s.installLocation)) ?? [],
+      names: await pluginSkillIdentities(s.installLocation),
     })),
   );
 }
