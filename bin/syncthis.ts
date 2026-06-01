@@ -38,7 +38,9 @@ usage:
   syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
   syncthis rm  plugin <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
                                              (no "add mcp" — syncthis mirrors MCP servers, it
-                                             doesn't install them)
+                                             doesn't install them; to remove a server literally
+                                             named mcp/skill/plugin use the explicit noun, e.g.
+                                             "rm mcp mcp --all")
   syncthis doctor                            MCP coverage + conflict report
   syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]
                                              additive: make <primary>'s plugin content reachable on

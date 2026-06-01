@@ -107,9 +107,24 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
       for (const repo of chosenRepos) base.skills.push({ repo, status: "added", message: "would add" });
     }
     if (scopedMcpCohort.length) {
+      // Read+diff each agent so the dry-run reports only what would actually be added
+      // (additive, conflict-safe) — not every bundled server regardless of what's present.
       const { servers } = await resolvePluginMcpServers(chosen);
+      const serverMap: Record<string, McpServer> = {};
+      for (const s of servers) serverMap[s.name] = s.server;
       for (const agent of scopedMcpCohort) {
-        base.mcp.push({ agent, added: servers.map((s) => s.name), conflicts: [], status: "synced" });
+        const adapter = findAdapter(agent);
+        if (!adapter) {
+          base.mcp.push({ agent, added: [], conflicts: [], status: "skipped", message: "no MCP adapter" });
+          continue;
+        }
+        const aRead = await adapter.read();
+        if (aRead.error) {
+          base.mcp.push({ agent, added: [], conflicts: [], status: "failed", message: aRead.error });
+          continue;
+        }
+        const diff = diffServers(serverMap, aRead.servers);
+        base.mcp.push({ agent, added: diff.add, conflicts: diff.overwrite, status: "synced" });
       }
     }
     return base;
