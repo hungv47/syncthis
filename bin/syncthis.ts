@@ -58,7 +58,7 @@ agents supported for MCP sync (use these IDs with the directional command):
   github-copilot, windsurf, opencode, openclaw, hermes-agent, goose
   plugin cohort (get the full bundle): claude-code, codex (native CLI), cursor
   (write-only via npx plugins). the other non-plugin agents get the skill subset via npx skills.
-  skills also reach `pi` (no native MCP, so skills-only — not an MCP-sync target).
+  skills also reach \`pi\` (no native MCP, so skills-only — not an MCP-sync target).
 
 flags:
   --dry-run       report what would change without writing.
