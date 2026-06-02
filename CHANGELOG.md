@@ -2,6 +2,12 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.12.1] — 2026-06-02
+
+### Fixed
+- **Tolerate Claude `plugin list --json` truncation.** On a machine with many plugins, `claude plugin list --json` can hit a ~64 KB stdout cap and return malformed JSON, which previously broke every plugin-aware path (`plugin list`, `mirror`, `plugin rm`, `add plugin`). The Claude plugin adapter now reads `~/.claude/plugins/installed_plugins.json` directly when the CLI is missing, exits non-zero, or returns unparseable/unexpected JSON (with a hint when stdout is exactly 65 536 bytes — the telltale of a buffer cap). `marketplaceSources()` gets the same fallback against `~/.claude/plugins/known_marketplaces.json`, so `mirror`'s `<name>@<marketplace>` resolution and provisioning still work when `claude plugin marketplace list --json` is unreadable too. Same shape, same data — just read from Claude's own state files instead of round-tripping the CLI. New exported `parseClaudeInstalledPlugins` for tests.
+- **Skill already-synced guard is now per-agent, not global.** `addSkillsFromPlugins` previously skipped a source repo whenever every skill name was globally present in `npx skills list -g --json` — even if those skills were registered only on *some* agents and the current sync was targeting agents that didn't have them. After a TUI "Add from repo" that picked a subset of agents, a later `syncthis run` (cohort) would falsely report "already synced" and leave the missing agents missing. Now a repo is skipped only when every skill it contributes is already registered on **every requested agent**. `force: true` (interactive Add-from-repo / Sync-from-plugins) still bypasses the guard. Default `run`/`sync` behavior unchanged for the common case where the cohort already has everything.
+
 ## [0.12.0] — 2026-06-02
 
 ### Added
