@@ -8,14 +8,14 @@
 
 ![syncthis run mirroring MCP servers across 12 agents](./assets/demo.gif)
 
-**One CLI to keep MCP servers in sync across your AI coding agents — plus a plugin mirror and skills delegation.**
+**One CLI to keep MCP servers in sync across your AI coding agents — plus plugin and skills propagation.**
 
 Every coding agent stores its MCP servers in its own file, its own format, its own path. Add a server to Claude Code and the other eleven don't know it exists — so you wire up the same server, by hand, again and again. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.** Nothing else does cross-agent MCP sync — that's why it exists.
 
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
 - **MCP servers** — union sync across all 12 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
-- **Plugins** — `mirror` one agent's plugin content onto **every** other agent, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills.
+- **Plugins** — add one, a few, or all Claude-installed plugins to chosen agents, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills. `mirror` remains as a batch shortcut for every installed plugin.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
 Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes, Goose** — 12 in total.
@@ -52,7 +52,7 @@ After global install, drop the `npx @hungv47/syncthis` prefix — every command 
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
-| ✅ mirrors plugin content to every agent (plugins on Codex/Cursor; skills on the rest) | ❌ installs plugins (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ propagates selected plugin content to chosen agents (plugins on Codex/Cursor; skills on the rest) | ❌ installs plugins from scratch (use `npx plugins add`, `claude plugin install`, etc.) |
 | ✅ shows a cross-agent plugin overview (`plugin list`) | ❌ acts as a plugin source-of-truth — each agent's own config is the truth |
 | ✅ uninstalls a plugin everywhere — native plugin + surfaced skills (`plugin rm`, guarded) | ❌ deletes anything implicitly — removal only via the guarded `rm` / `plugin rm` commands |
 
@@ -85,15 +85,15 @@ syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every othe
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
 syncthis doctor                             # MCP coverage + conflict report
 
-# Plugins → every agent (Codex/Cursor as plugins; the other non-plugin agents get the skills). Additive.
-syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # propagate primary's plugin content to every agent
+# Plugins → chosen agents (Codex/Cursor as plugins; non-plugin agents get skills + bundled MCPs). Additive.
+syncthis add plugin <name…> --agents <a,b,c> | --all [--dry-run]  # source = claude-code
+syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # batch shortcut: every plugin from primary
 syncthis plugin list                        # cross-agent plugin overview (read-only)
 syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
                                             # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
 
 # Selective add / remove — pick the exact items + agents
 syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
-syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]   # source = claude-code
 syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
 syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
 syncthis rm  plugin <name…>   …             # alias of `plugin rm`
@@ -188,7 +188,7 @@ syncthis rm executor --all --yes
 
 ## Plugins
 
-Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. `mirror` makes one agent's plugin **content** reachable on **every** other agent, by the best mechanism each has, and **additively — it never uninstalls**:
+Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. The plugin sync flow makes one, a few, or all Claude-installed plugins reachable on chosen destination agents, by the best mechanism each has, and **additively — it never uninstalls**. `mirror` is the batch shortcut for every installed plugin:
 
 - **Codex** consumes plugins natively (`codex plugin add`). syncthis installs each missing plugin and, by default, registers any marketplace Codex lacks first.
 - **Cursor** has no list CLI, so it's a **write-only** target: pushed by source repo (`npx plugins add <repo> --target cursor`), additive, from a Claude primary only.
@@ -199,7 +199,11 @@ Plugins aren't config records like MCP servers — they're installed artifact bu
 # plus the plugin-derived skills surfaced on every non-plugin agent.
 syncthis plugin list
 
-# Make one agent the source of truth: propagate its plugins to every other agent
+# Add selected Claude plugins to chosen agents
+syncthis add plugin forsvn-skills --agents codex,opencode --dry-run
+syncthis add plugin forsvn-skills --agents codex,opencode
+
+# Batch every installed plugin from one primary to every other agent
 syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
 syncthis mirror claude-code --no-provision --yes   # skip Codex marketplace registration + Codex skills-fallback
@@ -210,7 +214,7 @@ syncthis plugin rm forsvn-skills --all --yes
 syncthis plugin rm forsvn-skills --agents codex,opencode,gemini-cli --yes
 ```
 
-`mirror` shows a diff and prompts for confirmation unless you pass `--yes`. It only ever **adds** — a mirror can never wipe an agent's plugins. Removal is a separate, explicit command (`plugin rm`, below). Installs delegate to each target's native CLI; nothing is written directly to a plugin cache.
+`add plugin` lets you choose exact plugins and agents. `mirror` shows a diff and prompts for confirmation unless you pass `--yes`; it only ever **adds** every plugin from the primary — it can never wipe an agent's plugins. Removal is a separate, explicit command (`plugin rm`, below). Installs delegate to each target's native CLI; nothing is written directly to a plugin cache.
 
 ### Uninstalling — `plugin rm`
 

@@ -31,7 +31,7 @@ interface CommandRow {
 // (and garbles) on an 80-col terminal. Keep each desc within ~43 chars.
 const COMMANDS: CommandRow[] = [
   { cmd: "syncthis sync", desc: "share MCP + skills with every agent" },
-  { cmd: "syncthis mirror <primary>", desc: "push one agent's plugins to every agent" },
+  { cmd: "syncthis add plugin <name> --all", desc: "push plugin content to agents" },
   { cmd: "syncthis mcp", desc: "MCP servers only (skip skills)" },
   { cmd: "syncthis skills", desc: "refresh skills (npx skills update)" },
   { cmd: "syncthis <from> <to>", desc: "one-way MCP copy between two agents" },

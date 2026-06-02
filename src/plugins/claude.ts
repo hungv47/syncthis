@@ -152,6 +152,13 @@ export const claudePluginAdapter: PluginAdapter = {
       plugins: [],
     };
 
+    // Claude currently truncates `claude plugin list --json` at 64 KiB on large
+    // installs while still exiting 0. The on-disk state is complete and is what
+    // the CLI renders from, so prefer it and keep the CLI as a compatibility
+    // fallback for older layouts.
+    const state = await readInstalledPluginState();
+    if (state) return { ...base, exists: true, plugins: state };
+
     const pluginsRes = await run("claude", ["plugin", "list", "--json"], { timeoutMs: READ_TIMEOUT_MS });
     if (pluginsRes.notFound) return fallbackRead("claude CLI not found on PATH", base);
     if (!pluginsRes.ok) {
