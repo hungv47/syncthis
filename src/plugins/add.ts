@@ -13,7 +13,7 @@
 // Additive only — never removes. A plugin not installed on Claude is reported, not
 // guessed at.
 
-import { claudePluginAdapter } from "./claude.ts";
+import { claudeMarketplaceClonePaths, claudePluginAdapter } from "./claude.ts";
 import { pluginAdapters } from "./index.ts";
 import { resolvePluginMcpServers } from "./mcp.ts";
 import type { McpCohortResult } from "./mirror.ts";
@@ -88,6 +88,11 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   const sources = (await claudePluginAdapter.marketplaceSources?.()) ?? null;
   const repoOf = (p: PluginRecord): string | undefined =>
     p.marketplace ? sources?.get(p.marketplace) : undefined;
+  // Local clone dir per marketplace — the network-free install path. Source is always
+  // Claude here, so the clone map is Claude's known_marketplaces installLocation set.
+  const clonePaths = await claudeMarketplaceClonePaths();
+  const cloneOf = (p: PluginRecord): string | undefined =>
+    p.marketplace ? clonePaths.get(p.marketplace) : undefined;
   const chosenRepos = [
     ...new Set(chosen.map(repoOf).filter((r): r is string => !!r && isSafeRepoSlug(r))),
   ].sort();
@@ -144,7 +149,7 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
     const codex = pluginAdapters.find((a) => a.id === "codex")!;
     for (const p of chosen) {
       tick(`codex: ${p.name}`);
-      const res = await codex.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p) });
+      const res = await codex.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p), sourceClonePath: cloneOf(p) });
       base.installs.push(res);
       // A bundle Codex can't load as a plugin → add its skills to Codex.
       if (res.skillsFallbackRepo) {

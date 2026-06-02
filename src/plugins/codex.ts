@@ -1,4 +1,5 @@
 import { expandHome } from "../io.ts";
+import { parseMarketplaceList, readLocalMarketplace, resolveLocalMarketplace } from "./marketplace.ts";
 import { assertSafeIdentifier, isSafeRepoSlug, parsePluginId, run } from "./shell.ts";
 import type {
   PluginAdapter,
@@ -164,6 +165,80 @@ export const codexPluginAdapter: PluginAdapter = {
     );
     if (present) {
       return { agent: "codex", target: present.marketplace ? `${name}@${present.marketplace}` : name, status: "present" };
+    }
+
+    // Preferred mechanism: install from the SOURCE agent's local marketplace clone.
+    // Register the clone on Codex (idempotent — reuse an existing marketplace by name
+    // or root, never re-add) and install `name@<derived-marketplace>`. Network-free;
+    // avoids the `npx plugins` provisioning that produced the duplicate/orphaned
+    // marketplace registrations (`personal` rooted at $HOME, dangling `@plugins-cli`).
+    // Only when a clone path is supplied; absent it, fall through to the legacy path.
+    if (opts.sourceClonePath) {
+      const mkt = await readLocalMarketplace(opts.sourceClonePath);
+      // Only take the local path when the clone's manifest actually declares this
+      // plugin under `name`. Agent-local install ids can differ from the marketplace
+      // entry name — URL-named `github.com-*` ids, or multi-plugin aliases — and
+      // `plugin add name@mkt` wouldn't resolve; those fall through to the legacy
+      // resolution/provision path (which handles coverage and the mismatch error).
+      if (mkt && mkt.pluginNames.includes(name)) {
+        const mlist = await run("codex", ["plugin", "marketplace", "list"], { timeoutMs: LIST_TIMEOUT_MS });
+        const existing = mlist.ok ? parseMarketplaceList(mlist.stdout || "") : [];
+        const resolved = resolveLocalMarketplace({ existing, name: mkt.name, clonePath: opts.sourceClonePath });
+        const target = `${name}@${resolved.name}`;
+        if (opts.dryRun) {
+          return {
+            agent: "codex",
+            target,
+            status: "installed",
+            message: resolved.action === "add" ? "dry-run (would register local marketplace)" : "dry-run",
+          };
+        }
+        if (resolved.action === "add") {
+          const reg = await run("codex", ["plugin", "marketplace", "add", opts.sourceClonePath], { timeoutMs: ADD_TIMEOUT_MS });
+          if (reg.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
+          if (!reg.ok) {
+            return {
+              agent: "codex",
+              target,
+              status: "failed",
+              message: `register local marketplace failed: ${reg.stderr.trim() || `exit ${reg.exitCode}`}`,
+            };
+          }
+        }
+        const add = await run("codex", ["plugin", "add", "--", target], { timeoutMs: ADD_TIMEOUT_MS });
+        if (add.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
+        if (add.ok) return { agent: "codex", target, status: "installed" };
+        // Same alias / name-mismatch tolerance as the marketplace-resolution path: an
+        // alias whose plugin.json name differs is covered by its canonical sibling if
+        // that's already installed, else falls back to skills (gated on provisioning,
+        // since the fallback is a network `npx skills add`).
+        if (isNameMismatch(add.stderr)) {
+          const canonical = add.stderr.match(/plugin\.json name [`'"]([^`'"]+)[`'"]/i)?.[1];
+          if (canonical && rows.some((r) => r.installed && r.name === canonical)) {
+            return {
+              agent: "codex",
+              target,
+              status: "skipped",
+              coveredBy: canonical,
+              message: `covered by the bundle's canonical plugin \`${canonical}\` on Codex — not re-added as skills`,
+            };
+          }
+          return {
+            agent: "codex",
+            target,
+            status: "skipped",
+            message: opts.provision
+              ? `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — added to Codex as skills instead`
+              : `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — skipped (skills-fallback disabled via --no-provision)`,
+            ...(opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)
+              ? { skillsFallbackRepo: opts.sourceRepo }
+              : {}),
+          };
+        }
+        return { agent: "codex", target, status: "failed", message: add.stderr.trim() || `exit ${add.exitCode}` };
+      }
+      // No manifest / the plugin name isn't a declared entry (URL-named id or alias)
+      // → fall through to the marketplace-resolution / provision path below.
     }
 
     // `codex plugin add` rejects a bare name — it needs <name>@<marketplace>.

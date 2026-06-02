@@ -18,6 +18,7 @@
 // plugin/skill/MCP server to an agent, never remove one — so a mistake can't wipe
 // plugins, and a name that already exists with a different config is left untouched.
 
+import { claudeMarketplaceClonePaths } from "./claude.ts";
 import { pluginAdapters } from "./index.ts";
 import { resolvePluginMcpServers, type PluginMcpServer, type PluginMcpSkip } from "./mcp.ts";
 import { isSafeRepoSlug, run } from "./shell.ts";
@@ -163,6 +164,11 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
     sources = await primary.marketplaceSources();
   }
   const repoOf = (p: PluginRecord): string | undefined => (p.marketplace ? sources?.get(p.marketplace) : undefined);
+  // Local marketplace clone dir per plugin — the network-free install path. Only a
+  // Claude primary exposes clone locations (known_marketplaces installLocation); for
+  // any other primary the map is empty and installs fall back to the legacy path.
+  const clonePaths = opts.from === "claude-code" ? await claudeMarketplaceClonePaths() : new Map<string, string>();
+  const cloneOf = (p: PluginRecord): string | undefined => (p.marketplace ? clonePaths.get(p.marketplace) : undefined);
 
   const targets: MirrorTarget[] = [];
 
@@ -189,7 +195,7 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
       const installs: PluginInstallResult[] = [];
       for (const [i, p] of add.entries()) {
         opts.onProgress?.(`${a.id}: ${p.name}`, i + 1, add.length);
-        installs.push(await a.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p) }));
+        installs.push(await a.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p), sourceClonePath: cloneOf(p) }));
       }
       target.installs = installs;
 

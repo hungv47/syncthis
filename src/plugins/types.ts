@@ -33,6 +33,13 @@ export type PluginInstallOpts = {
   // owner/repo to provision from, when the plugin's marketplace isn't registered
   // on the target. Supplied by the mirror from the primary's marketplace list.
   sourceRepo?: string;
+  // Absolute path to the SOURCE agent's local marketplace clone for this plugin
+  // (e.g. ~/.claude/plugins/marketplaces/<mkt>). When present, the target installs
+  // by registering this clone via `<target> plugin marketplace add <path>` and
+  // installing `<name>@<marketplace>` from it — network-free, and the preferred path
+  // over `npx plugins` provisioning. `sourceRepo` stays the fallback when no clone
+  // exists. See src/plugins/marketplace.ts.
+  sourceClonePath?: string;
 };
 
 export type PluginUninstallOpts = {

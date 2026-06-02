@@ -135,6 +135,27 @@ async function readKnownMarketplaceSources(): Promise<Map<string, string> | null
   }
 }
 
+// marketplace name → local clone directory (`installLocation`) for Claude's
+// registered marketplaces. The clone is what a target's
+// `plugin marketplace add <path>` registers to install from, network-free — the
+// preferred plugin transfer mechanism (see src/plugins/marketplace.ts). Best-effort:
+// an entry without an installLocation is skipped; a read failure yields an empty map.
+export async function claudeMarketplaceClonePaths(): Promise<Map<string, string>> {
+  try {
+    const data = await readJson(expandHome(KNOWN_MARKETPLACES_PATH));
+    if (!data || typeof data !== "object" || Array.isArray(data)) return new Map();
+    const map = new Map<string, string>();
+    for (const [name, entry] of Object.entries(data as Record<string, { installLocation?: unknown }>)) {
+      if (entry && typeof entry.installLocation === "string" && entry.installLocation) {
+        map.set(name, entry.installLocation);
+      }
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
 async function fallbackRead(error: string, base: PluginAdapterRead): Promise<PluginAdapterRead> {
   const fallback = await readInstalledPluginState();
   if (fallback) return { ...base, exists: true, plugins: fallback };

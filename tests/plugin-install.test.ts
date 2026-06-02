@@ -81,6 +81,14 @@ function codexListTable(rows: CodexRow[]): string {
   return ["Marketplace `mkt`", "/x/marketplace.json", "", fmt(header), ...rows.map(fmt), ""].join("\n");
 }
 
+// Render a `codex plugin marketplace list` table (MARKETPLACE / ROOT columns) so the
+// local-marketplace path can parse current marketplaces and decide reuse-vs-add.
+function mktTable(rows: [name: string, root: string][]): string {
+  const all: [string, string][] = [["MARKETPLACE", "ROOT"], ...rows];
+  const w = Math.max(...all.map((r) => r[0].length)) + 2;
+  return all.map(([n, r]) => n.padEnd(w) + r).join("\n") + "\n";
+}
+
 // Fakes for the --provision path: a `codex` whose `plugin list` gains the plugin
 // only AFTER fake `npx plugins add` drops a sentinel — exercising the
 // provision → re-read → install chain.
@@ -421,5 +429,125 @@ exit 0
     expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
     // ...but never ran a native `codex plugin add` (nothing exposes it).
     expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
+  });
+});
+
+describe("codex installPlugin — local marketplace (sourceClonePath)", () => {
+  // A source clone dir with a marketplace manifest, as Claude keeps under
+  // ~/.claude/plugins/marketplaces/<mkt>/. The local-marketplace path derives the
+  // marketplace name from this manifest.
+  async function makeClone(name: string, pluginNames: string[] = [name]): Promise<string> {
+    const clone = join(workDir, "marketplaces", name);
+    await mkdir(join(clone, ".claude-plugin"), { recursive: true });
+    await writeFile(
+      join(clone, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({ name, plugins: pluginNames.map((n) => ({ name: n, source: "./plugin" })) }),
+    );
+    return clone;
+  }
+
+  async function installLocalFakes(opts: {
+    listRows: CodexRow[];
+    mktRows?: [string, string][];
+    addExit?: number;
+    addStderr?: string;
+  }) {
+    const binDir = join(workDir, "bin");
+    await mkdir(binDir, { recursive: true });
+    const listFile = join(workDir, "codex-list.txt");
+    const mktFile = join(workDir, "codex-mkt.txt");
+    await writeFile(listFile, codexListTable(opts.listRows));
+    await writeFile(mktFile, mktTable(opts.mktRows ?? []));
+    const addStderr = (opts.addStderr ?? "fake add failure").replace(/`/g, "\\`");
+    const addBranch = opts.addExit != null ? `echo "${addStderr}" >&2; exit ${opts.addExit}` : "exit 0";
+    // Order matters: the `plugin marketplace …` subcommands ($2=marketplace) are
+    // matched before the bare `plugin list` / `plugin add` ($2=list/add).
+    const codex = `#!/bin/sh
+echo "codex $@" >> ${invocationsFile}
+if [ "$1 $2 $3" = "plugin marketplace list" ]; then cat ${mktFile}; exit 0; fi
+if [ "$1 $2 $3" = "plugin marketplace add" ]; then echo "Added marketplace"; exit 0; fi
+if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi
+if [ "$1 $2" = "plugin add" ]; then ${addBranch}; fi
+exit 0
+`;
+    await writeFile(join(binDir, "codex"), codex);
+    await chmod(join(binDir, "codex"), 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  }
+
+  test("registers the local marketplace then installs name@<derived>, no npx", async () => {
+    const clone = await makeClone("impeccable");
+    await installLocalFakes({
+      listRows: [["other@plugins-cli", "not installed", "", "/cache/other"]],
+      mktRows: [["personal", "/Users/me"]],
+    });
+    const res = await codexPluginAdapter.installPlugin!("impeccable", {
+      dryRun: false,
+      provision: true,
+      sourceClonePath: clone,
+    });
+    expect(res.status).toBe("installed");
+    expect(res.target).toBe("impeccable@impeccable");
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.trim() === `codex plugin marketplace add ${clone}`)).toBe(true);
+    expect(inv.some((l) => l.trim() === "codex plugin add -- impeccable@impeccable")).toBe(true);
+    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+  });
+
+  test("reuses an already-registered marketplace (by root), does not re-add", async () => {
+    const clone = await makeClone("impeccable");
+    await installLocalFakes({
+      listRows: [["other@plugins-cli", "not installed", "", "/cache/other"]],
+      mktRows: [["impeccable", clone]],
+    });
+    const res = await codexPluginAdapter.installPlugin!("impeccable", {
+      dryRun: false,
+      provision: true,
+      sourceClonePath: clone,
+    });
+    expect(res.status).toBe("installed");
+    const inv = await readInvocations();
+    expect(inv.some((l) => /plugin marketplace add/.test(l))).toBe(false);
+    expect(inv.some((l) => l.trim() === "codex plugin add -- impeccable@impeccable")).toBe(true);
+  });
+
+  test("dry-run with a clone path does not shell out", async () => {
+    const clone = await makeClone("impeccable");
+    await installLocalFakes({ listRows: [["other@plugins-cli", "not installed", "", "/cache/other"]] });
+    const res = await codexPluginAdapter.installPlugin!("impeccable", { dryRun: true, sourceClonePath: clone });
+    expect(res.status).toBe("installed");
+    expect(res.message).toMatch(/dry-run/);
+    const inv = await readInvocations();
+    expect(inv.some((l) => /plugin marketplace add/.test(l))).toBe(false);
+    expect(inv.some((l) => /plugin add --/.test(l))).toBe(false);
+  });
+
+  test("already-present plugin short-circuits before touching marketplaces", async () => {
+    const clone = await makeClone("impeccable");
+    await installLocalFakes({ listRows: [["impeccable@personal", "installed, enabled", "3.5.0", "/cache/imp"]] });
+    const res = await codexPluginAdapter.installPlugin!("impeccable", { dryRun: false, sourceClonePath: clone });
+    expect(res.status).toBe("present");
+    const inv = await readInvocations();
+    expect(inv.some((l) => /plugin marketplace/.test(l))).toBe(false);
+    expect(inv.some((l) => l.trim().startsWith("codex plugin add"))).toBe(false);
+  });
+
+  test("name-mismatch on the local add falls back to skills when provisioning", async () => {
+    // The manifest declares the alias entry `alias`, so the local path is taken; the
+    // `codex plugin add` then hits the plugin.json-name-mismatch (canonical ≠ alias).
+    const clone = await makeClone("bundle", ["alias"]);
+    await installLocalFakes({
+      listRows: [["other@plugins-cli", "not installed", "", "/cache/other"]],
+      addExit: 1,
+      addStderr: "plugin.json name `canonical` does not match marketplace plugin name `alias`",
+    });
+    const res = await codexPluginAdapter.installPlugin!("alias", {
+      dryRun: false,
+      provision: true,
+      sourceRepo: "owner/bundle",
+      sourceClonePath: clone,
+    });
+    expect(res.status).toBe("skipped");
+    expect(res.skillsFallbackRepo).toBe("owner/bundle");
   });
 });
