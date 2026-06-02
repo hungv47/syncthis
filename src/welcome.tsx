@@ -1,10 +1,21 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import React from "react";
 import { Box, Text, render } from "ink";
 import Gradient from "ink-gradient";
 
-import packageJson from "../package.json" with { type: "json" };
+function readPackageVersion(): string {
+  try {
+    const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
+    const raw = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+    return typeof raw.version === "string" ? raw.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
-const VERSION = packageJson.version;
+const VERSION = readPackageVersion();
 
 // The "syncthis" wordmark, pre-rendered in cfonts' `block` font. Embedded as a
 // static string on purpose: cfonts (via ink-big-text) loads its font JSON with a
@@ -34,6 +45,7 @@ const COMMANDS: CommandRow[] = [
   { cmd: "syncthis add plugin <name> --all", desc: "push plugin content to agents" },
   { cmd: "syncthis mcp", desc: "MCP servers only (skip skills)" },
   { cmd: "syncthis skills", desc: "refresh skills (npx skills update)" },
+  { cmd: "syncthis update", desc: "update syncthis to latest" },
   { cmd: "syncthis <from> <to>", desc: "one-way MCP copy between two agents" },
   { cmd: "syncthis rm <server> --all", desc: "remove one MCP server everywhere" },
   { cmd: "syncthis plugin list", desc: "list installed plugins per agent" },

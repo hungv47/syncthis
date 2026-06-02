@@ -2,6 +2,15 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.12.3] — 2026-06-02
+
+### Added
+- **`syncthis update`.** Updates the global `@hungv47/syncthis` install to latest, using `npm install -g @hungv47/syncthis@latest` by default and Bun's global install when the current executable comes from Bun. Supports `--dry-run`.
+- **`syncthis version` / `--version` / `-v`.** Prints the installed package version directly.
+
+### Fixed
+- **Version reporting now reads installed package metadata at runtime.** The welcome banner and `version` command read the installed `package.json` instead of bundling a JSON snapshot, preventing stale version output from a generated `dist/syncthis.mjs`.
+
 ## [0.12.2] — 2026-06-02
 
 ### Fixed
