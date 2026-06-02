@@ -2,6 +2,15 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.12.0] — 2026-06-02
+
+### Added
+- **Selective MCP sync — share chosen servers from one agent to others.** New core `runSelectiveMcpSync` (`sync.ts`): pick a source agent, pick specific MCP server names, pick destination agents, and add just those servers — **additive and conflict-safe**. A server name already present on a destination with a different config is left untouched and reported (same conflict policy as union sync, sacred element #3); a name missing from the source is reported as `notFound`. This is *not* an `add mcp` — it never installs a new server or overwrites one, it only spreads servers an agent already has, so MCP stays sync + remove only. Exposed interactively via the MCP manager's **Sync selected** flow (source → servers → destinations → preview → confirm).
+
+### Changed
+- **Interactive capability management, simplified.** Running `syncthis` with no args now opens a top-level menu of per-capability managers — **Manage plugins** (sync selected / mirror / list / remove), **Manage skills** (add from repo / sync from plugins / update / remove), **Manage MCPs** (sync everything / sync selected / sync all only / remove / doctor), and **Check problems** — each walking the same source → items → destinations → preview/confirm shape. This replaces 0.11.0's single "Add or remove capabilities" entry. No CLI command behavior changed; the picker is just clearer to navigate.
+- **Skill add gained a `force` mode.** `addSkillsFromPlugins({ force })` bypasses the global already-present guard so the interactive "Add from repo" / "Sync from plugins" flows can re-add chosen plugin skills to chosen agents on demand, instead of being silently skipped when the skill name is already globally present. The default (non-force) `run`/`sync` path is unchanged — it still skips already-synced repos so a repeat `run` doesn't re-fetch.
+
 ## [0.11.0] — 2026-06-01
 
 ### Added
