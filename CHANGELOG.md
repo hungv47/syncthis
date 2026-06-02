@@ -2,6 +2,11 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.12.4] — 2026-06-02
+
+### Fixed
+- **Interactive multi-select prompts now use real checkboxes without flooding large lists.** Plugin, skill, agent, and MCP pickers use a windowed checkbox prompt with Space to toggle, `a` to select all, and Enter to confirm. Large installs stay paged instead of rendering hundreds of rows at once, and empty submits warn/retry without crashing.
+
 ## [0.12.3] — 2026-06-02
 
 ### Added
