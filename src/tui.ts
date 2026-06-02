@@ -9,7 +9,6 @@ import {
   type SelectiveMcpReport,
 } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
-import { mirrorHasChanges, runMirror, type MirrorReport } from "./plugins/mirror.ts";
 import { listPlugins, pluginAdapters } from "./plugins/index.ts";
 import { buildPluginOverview } from "./plugins/overview.ts";
 import { runPluginUninstall, uninstallHasChanges } from "./plugins/uninstall.ts";
@@ -77,16 +76,14 @@ export async function showInteractivePicker(): Promise<void> {
 }
 
 async function managePlugins(): Promise<MenuResult> {
-  const op = await pickOne<"sync" | "mirror" | "list" | "remove" | "back">("Plugins: what do you want to do?", [
-    { value: "sync", label: "Sync selected plugins", hint: "Claude source, choose plugins and destination agents" },
-    { value: "mirror", label: "Mirror all from source", hint: "Claude or Codex source, additive" },
+  const op = await pickOne<"sync" | "list" | "remove" | "back">("Plugins: what do you want to do?", [
+    { value: "sync", label: "Sync plugins", hint: "choose source, one/few/all plugins, then destinations" },
     { value: "list", label: "List installed plugins", hint: "read-only overview" },
     { value: "remove", label: "Remove plugins", hint: "guarded uninstall + surfaced skill removal" },
     { value: "back", label: "Back" },
   ]);
   if (!op || op === "back") return "back";
   if (op === "sync") await syncPlugins();
-  else if (op === "mirror") await mirrorPluginsFromSource();
   else if (op === "list") await doPluginList();
   else await removePlugins();
   return "done";
@@ -188,7 +185,7 @@ async function doPluginList() {
     return;
   }
   if (o.derivedRepos.length === 0) {
-    log.info("plugin-derived skills: none surfaced yet (run the mirror/sync flow)");
+    log.info("plugin-derived skills: none surfaced yet (run the plugin sync flow)");
     return;
   }
   const lines = o.derived.map((d) => `${d.agent}: ${d.skills.length}`).join("  ");
@@ -228,7 +225,7 @@ async function syncPlugins() {
     return;
   }
 
-  if (!(await confirmYes("apply plugin sync? native agents get plugins; non-plugin agents get derived skills/MCPs."))) return;
+  if (!(await confirmYes(`apply plugin sync from ${source}? native agents get plugins; non-plugin agents get derived skills/MCPs.`))) return;
   const s = spinner();
   s.start("Syncing plugins...");
   const applied = await runPluginAdd({
@@ -242,36 +239,6 @@ async function syncPlugins() {
   });
   s.stop("Plugin sync applied.");
   printPluginAddApplied(applied);
-}
-
-async function mirrorPluginsFromSource() {
-  const source = await pickOne<AgentId>(
-    "mirror plugins from which source agent?",
-    pluginAdapters.map((a) => ({ value: a.id, label: a.id })),
-  );
-  if (!source) return;
-
-  const preview = await runMirror({ from: source, apply: false, provision: true });
-  if (!mirrorHasChanges(preview)) {
-    log.success("nothing to do - every reachable target already has the source plugin content.");
-    return;
-  }
-  printMirrorPreview(preview);
-  if (!(await confirmYes(`apply mirror from ${source} to every reachable agent?`))) return;
-
-  const s = spinner();
-  s.start("Mirroring plugins...");
-  const applied = await runMirror({
-    from: source,
-    apply: true,
-    provision: true,
-    onProgress: (label, i, total) => s.message(`${label}  (${i}/${total})`),
-  }).catch((err) => {
-    s.stop("Mirror failed.");
-    throw err;
-  });
-  s.stop("Mirror applied.");
-  printMirrorApplied(applied);
 }
 
 async function removePlugins() {
@@ -368,6 +335,11 @@ async function addSkillsFromRepo() {
 }
 
 async function syncPluginDerivedSkills() {
+  const source = await pickOne<AgentId>("plugin skill source agent", [
+    { value: "claude-code", label: "claude-code", hint: "installed Claude plugins" },
+  ]);
+  if (!source) return;
+
   const agents = await pickAgents(skillCohort(), "sync plugin-derived skills to which agents?", skillCohort());
   if (!agents) return;
 
@@ -379,7 +351,7 @@ async function syncPluginDerivedSkills() {
   const wouldAdd = preview.results.filter((r) => r.status === "added").length;
   const skipped = preview.results.filter((r) => r.status === "skipped").length;
   log.info(`plugin-derived skills: ${preview.sources.length} source repo(s), ${wouldAdd} would add, ${skipped} already synced.`);
-  if (!(await confirmYes(`sync plugin-derived skills to ${agents.length} agent(s)?`))) return;
+  if (!(await confirmYes(`sync plugin-derived skills from ${source} to ${agents.length} agent(s)?`))) return;
 
   const s = spinner();
   s.start("Syncing plugin-derived skills...");
@@ -539,55 +511,6 @@ function printPluginAddApplied(report: PluginAddReport) {
   }
   if (failed) log.error(`${ok} action(s) ok, ${failed} failed - run \`syncthis add plugin\` for detail`);
   else log.success(`plugin sync complete: ${ok} action(s).`);
-}
-
-function printMirrorPreview(report: MirrorReport) {
-  for (const t of report.targets) {
-    if (t.unsupportedReason) {
-      log.info(`${t.to}: ${t.unsupportedReason}`);
-      continue;
-    }
-    if (t.diff?.add.length) log.info(`${t.to}: +${t.diff.add.length} plugin(s)`);
-  }
-  if (report.cursor.supported && report.cursor.repos.length) {
-    log.info(`cursor: +${report.cursor.repos.length} repo push(es) via npx plugins`);
-  }
-  if (report.skillCohort.supported && (report.skillCohort.report?.sources.length ?? 0) > 0) {
-    log.info(`skills: ${report.skillCohort.report!.sources.length} source repo(s) to ${report.skillCohort.agents.length} non-plugin agent(s)`);
-  }
-  if (report.mcpCohort.supported && report.mcpCohort.servers.length > 0) {
-    log.info(`mcp: ${report.mcpCohort.servers.length} bundled server(s) to ${report.mcpCohort.agents.length} non-plugin agent(s)`);
-  }
-}
-
-function printMirrorApplied(report: MirrorReport) {
-  let ok = 0;
-  let skipped = 0;
-  let failed = 0;
-  for (const t of report.targets) {
-    for (const i of t.installs ?? []) {
-      if (i.status === "failed") failed += 1;
-      else if (i.status === "installed") ok += 1;
-      else skipped += 1;
-    }
-    for (const sf of t.skillsFallback ?? []) {
-      if (sf.status === "failed") failed += 1;
-      else if (sf.status === "added") ok += 1;
-      else skipped += 1;
-    }
-  }
-  for (const res of report.cursor.results) (res.status === "failed" ? (failed += 1) : (ok += 1));
-  for (const res of report.skillCohort.report?.results ?? []) {
-    if (res.status === "failed") failed += 1;
-    else if (res.status === "added") ok += 1;
-    else skipped += 1;
-  }
-  for (const res of report.mcpCohort.results ?? []) {
-    if (res.status === "failed") failed += 1;
-    else ok += res.added.length;
-  }
-  if (failed) log.error(`mirror complete with problems: ${ok} added, ${skipped} skipped, ${failed} failed`);
-  else log.success(`mirror complete: ${ok} added${skipped ? `, ${skipped} skipped` : ""}.`);
 }
 
 function printMcpSyncPreview(report: SelectiveMcpReport) {

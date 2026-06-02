@@ -7,12 +7,12 @@ const HELP = `syncthis — keep your AI tools in sync
   syncthis is a sync layer, not an installer. install MCP servers, plugins, and
   skills with whatever tool you prefer (mcpm, claude mcp add, claude plugin
   install, npx plugins add, npx skills add, …), then run \`syncthis sync\` to
-  mirror them across every coding agent.
+  share them across every coding agent.
 
   it does three things:
     • MCP servers — union sync across all 12 agents (the unique core)
-    • plugins     — mirror one agent's plugins onto the other plugin agents
-                    (Claude ↔ Codex natively; Cursor via \`npx plugins\`)
+    • plugins     — add selected Claude plugins to chosen agents
+                    (Codex natively; Cursor via \`npx plugins\`)
     • skills      — \`npx skills update -y\`, plus surfacing plugin-bundled skills
                     to the non-plugin agents (vercel-labs/skills)
 
@@ -43,7 +43,7 @@ usage:
                                              "rm mcp mcp --all")
   syncthis doctor                            MCP coverage + conflict report
   syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]
-                                             additive: make <primary>'s plugin content reachable on
+                                             batch shortcut: make every <primary> plugin reachable on
                                              every other agent. Codex gets native plugins (missing
                                              marketplaces are registered automatically); Cursor is
                                              pushed via \`npx plugins --target cursor\`; the non-plugin
@@ -1035,7 +1035,7 @@ function printPluginOverview(o: import("../src/plugins/overview.ts").PluginOverv
     return;
   }
   if (o.derivedRepos.length === 0) {
-    console.log(dim("  none surfaced yet — run `syncthis mirror claude-code` to push plugin skills to other agents"));
+    console.log(dim("  none surfaced yet — use `syncthis` → Manage plugins → Sync plugins, or `syncthis mirror claude-code` for batch all"));
     return;
   }
   console.log(dim(`  source repos: ${o.derivedRepos.join(", ")}`));
