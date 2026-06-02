@@ -2,6 +2,14 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.12.2] — 2026-06-02
+
+### Fixed
+- **Claude plugin reads no longer depend on truncated CLI JSON.** Large Claude plugin installs can make `claude plugin list --json` exit 0 with exactly 65 536 bytes of malformed JSON. The Claude plugin adapter now prefers Claude's durable `~/.claude/plugins/installed_plugins.json` state file, keeping `plugin list`, `add plugin`, `plugin rm`, and `mirror` working on large installs.
+
+### Changed
+- **Interactive plugin management now uses one selected sync flow.** The TUI no longer presents a separate "Mirror all" option. **Manage plugins → Sync plugins** asks for source, plugin selection, and destination agents; selecting all covers the old interactive mirror use case. The `syncthis mirror` CLI command remains as a batch/back-compat shortcut.
+
 ## [0.12.1] — 2026-06-02
 
 ### Fixed
