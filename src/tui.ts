@@ -1,3 +1,4 @@
+import { MultiSelectPrompt } from "@clack/core";
 import { intro, outro, select, text, isCancel, cancel, log, note, spinner } from "@clack/prompts";
 import {
   findAdapter,
@@ -206,7 +207,7 @@ async function syncPlugins() {
     return;
   }
 
-  const plugins = await pickManyPaged("choose plugin(s) to sync", pluginOptions(read.plugins));
+  const plugins = await pickMany("choose plugin(s) to sync", pluginOptions(read.plugins));
   if (!plugins) return;
 
   const targets = pluginTargetAgents(source);
@@ -249,7 +250,7 @@ async function removePlugins() {
     return;
   }
 
-  const plugins = await pickManyPaged("choose plugin(s) to remove", names.map((n) => ({ value: n, label: n })));
+  const plugins = await pickMany("choose plugin(s) to remove", names.map((n) => ({ value: n, label: n })));
   if (!plugins) return;
 
   const agentChoices = dedupe([...pluginAdapters.map((a) => a.id), ...skillCohort()]);
@@ -377,7 +378,7 @@ async function removeSkills() {
     log.info("no installed skills found (or `npx skills list` unavailable).");
     return;
   }
-  const skills = await pickManyPaged(
+  const skills = await pickMany(
     "choose skill(s) to remove",
     installed.map((s) => ({ value: s.name, label: s.name, hint: s.agents.join(", ") })),
   );
@@ -415,7 +416,7 @@ async function syncSelectedMcps() {
     return;
   }
 
-  const servers = await pickManyPaged("choose MCP server(s) to sync", names.map((n) => ({ value: n, label: n })));
+  const servers = await pickMany("choose MCP server(s) to sync", names.map((n) => ({ value: n, label: n })));
   if (!servers) return;
 
   const destinations = await pickAgents(listAgentIds().filter((id) => id !== source), "choose destination agent(s)");
@@ -446,7 +447,7 @@ async function removeMcps() {
     log.info("no MCP servers configured in any agent.");
     return;
   }
-  const servers = await pickManyPaged("choose MCP server(s) to remove", names.map((n) => ({ value: n, label: n })));
+  const servers = await pickMany("choose MCP server(s) to remove", names.map((n) => ({ value: n, label: n })));
   if (!servers) return;
 
   const agents = await pickAgents(listAgentIds(), "remove from which agents?");
@@ -559,7 +560,7 @@ async function pickOne<T extends string>(
   return raw as T;
 }
 
-async function pickManyPaged<T extends string>(
+async function pickMany<T extends string>(
   message: string,
   options: Array<MenuOption<T>>,
   initialValues: T[] = [],
@@ -569,54 +570,98 @@ async function pickManyPaged<T extends string>(
     log.info("nothing to choose.");
     return null;
   }
-
-  const selected = new Set(initialValues.filter((v) => clean.some((o) => o.value === v)));
-  let cursor = "done";
+  const initial = initialValues.filter((v) => clean.some((o) => o.value === v));
   while (true) {
-    const rows: Array<MenuOption<string>> = [
-      { value: "done", label: `Done (${selected.size} selected)` },
-      { value: "all", label: selected.size === clean.length ? "Clear all" : "Select all" },
-      ...clean.map((o, i) => ({
-        value: `item:${i}`,
-        label: `${selected.has(o.value) ? "[x]" : "[ ]"} ${o.label}`,
-        hint: o.hint,
-      })),
-      { value: "cancel", label: "Cancel" },
-    ];
-
-    const raw = await select({
-      message: `${message} (enter toggles; choose Done to continue)`,
-      options: rows,
-      initialValue: cursor,
+    const raw = await windowedMultiselect({
+      message: `${message} (space toggles, a selects all, enter confirms)`,
+      options: clean,
+      initialValues: initial,
+      cursorAt: initial[0],
       maxItems: MAX_MENU_ITEMS,
     });
-    if (isCancel(raw) || raw === "cancel") {
+    if (isCancel(raw)) {
       stopFlow();
     }
-    if (raw === "done") {
-      if (selected.size === 0) {
-        log.warn("choose at least one item.");
-        continue;
-      }
-      return clean.filter((o) => selected.has(o.value)).map((o) => o.value);
-    }
-    if (raw === "all") {
-      if (selected.size === clean.length) selected.clear();
-      else for (const o of clean) selected.add(o.value);
-      cursor = "done";
-      continue;
-    }
-    const idx = Number(String(raw).replace("item:", ""));
-    const item = clean[idx];
-    if (!item) continue;
-    if (selected.has(item.value)) selected.delete(item.value);
-    else selected.add(item.value);
-    cursor = String(raw);
+    const picked = raw as T[];
+    if (picked.length > 0) return picked;
+    log.warn("Select at least one item, or cancel with Ctrl-C.");
   }
 }
 
+async function windowedMultiselect<T extends string>(opts: {
+  message: string;
+  options: Array<MenuOption<T>>;
+  initialValues?: T[];
+  cursorAt?: T;
+  maxItems: number;
+}): Promise<T[] | symbol> {
+  let windowStart = 0;
+  const pageSize = Math.min(opts.options.length, Math.max(opts.maxItems, 5));
+
+  return new MultiSelectPrompt<MenuOption<T>>({
+    options: opts.options,
+    initialValues: opts.initialValues,
+    cursorAt: opts.cursorAt,
+    render() {
+      const heading = `\n${promptState(this.state)}  ${opts.message}`;
+      if (this.state === "submit") return `${heading}\n|  ${selectedSummary(opts.options, this.value as T[])}`;
+      if (this.state === "cancel") return `${heading}\n|  ${selectedSummary(opts.options, this.value as T[])}`;
+
+      if (this.options.length > pageSize) {
+        if (this.cursor >= windowStart + pageSize - 3) {
+          windowStart = Math.max(Math.min(this.cursor - pageSize + 3, this.options.length - pageSize), 0);
+        } else if (this.cursor < windowStart + 2) {
+          windowStart = Math.max(this.cursor - 2, 0);
+        }
+      }
+
+      const selected = new Set(this.value as T[]);
+      const visible = this.options.slice(windowStart, windowStart + pageSize);
+      const hasAbove = this.options.length > pageSize && windowStart > 0;
+      const hasBelow = this.options.length > pageSize && windowStart + pageSize < this.options.length;
+      const linePrefix = this.state === "error" ? "!" : "|";
+      const rows = visible.map((option, index) => {
+        const absolute = windowStart + index;
+        if (index === 0 && hasAbove) return "...";
+        if (index === visible.length - 1 && hasBelow) return "...";
+        return formatMultiOption(option, {
+          active: absolute === this.cursor,
+          selected: selected.has(option.value),
+        });
+      });
+      const footer = this.state === "error" ? `\n!  ${this.error}` : "\n`";
+      return `${heading}\n${linePrefix}  ${selected.size}/${this.options.length} selected\n${linePrefix}  ${rows.join(`\n${linePrefix}  `)}${footer}`;
+    },
+  }).prompt() as Promise<T[] | symbol>;
+}
+
+function promptState(state: string): string {
+  if (state === "submit") return "o";
+  if (state === "cancel") return "x";
+  if (state === "error") return "!";
+  return "?";
+}
+
+function formatMultiOption<T extends string>(
+  option: MenuOption<T>,
+  state: { active: boolean; selected: boolean },
+): string {
+  const marker = state.active ? ">" : " ";
+  const box = state.selected ? "[x]" : "[ ]";
+  const hint = option.hint ? ` (${option.hint})` : "";
+  return `${marker} ${box} ${option.label}${hint}`;
+}
+
+function selectedSummary<T extends string>(options: Array<MenuOption<T>>, values: T[]): string {
+  const selected = new Set(values);
+  const labels = options.filter((option) => selected.has(option.value)).map((option) => option.label);
+  if (labels.length === 0) return "none";
+  if (labels.length <= MAX_MENU_ITEMS) return labels.join(", ");
+  return `${labels.length} selected: ${labels.slice(0, MAX_MENU_ITEMS).join(", ")}, ...`;
+}
+
 async function pickAgents(known: AgentId[], message: string, initial?: AgentId[]): Promise<AgentId[] | null> {
-  return pickManyPaged(message, known.map((a) => ({ value: a, label: a })), initial);
+  return pickMany(message, known.map((a) => ({ value: a, label: a })), initial);
 }
 
 async function confirmYes(message: string): Promise<boolean> {

@@ -60,6 +60,7 @@
     "provenance": true
   },
   "devDependencies": {
+    "@clack/core": "^0.3.5",
     "@clack/prompts": "^0.7.0",
     "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
