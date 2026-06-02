@@ -202,6 +202,22 @@ describe("addSkillsFromPlugins", () => {
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });
 
+  test("force mode adds plugin skills even when the global guard would skip", async () => {
+    await writeMarketplaces({
+      a: {
+        source: { source: "github", repo: "owner/a" },
+        installLocation: join(workDir, "mp", "a"),
+        withSkills: true,
+        skills: ["x"],
+      },
+    });
+    await installFakeNpx({ listJson: '[{"name":"x"}]' });
+    const r = await addSkillsFromPlugins({ agents: ["opencode"], force: true });
+    expect(r.results).toEqual([{ repo: "owner/a", status: "added" }]);
+    const inv = await readInvocations();
+    expect(inv.some((l) => /npx -y skills add owner\/a .* -a opencode -y/.test(l))).toBe(true);
+  });
+
   test("preserves mixed skip/add results while scanning repo skills in parallel", async () => {
     await writeMarketplaces({
       a: {

@@ -41,6 +41,24 @@ export type FanOutReport = {
   applied: boolean;
 };
 
+export type SelectiveMcpTarget = {
+  to: AgentId;
+  toRead: AdapterRead;
+  add: string[];
+  conflicts: string[];
+  write?: AdapterWriteResult;
+};
+
+export type SelectiveMcpReport = {
+  from: AgentId;
+  to: AgentId[];
+  names: string[];
+  fromRead: AdapterRead;
+  notFound: string[];
+  targets: SelectiveMcpTarget[];
+  applied: boolean;
+};
+
 export type RemoveReport = {
   name: string;
   applied: boolean;
@@ -258,6 +276,64 @@ export async function runFanOut(opts: { from: AgentId; dryRun?: boolean; apply: 
   );
 
   return { from: opts.from, fromRead, targets, applied: opts.apply && !opts.dryRun };
+}
+
+export async function runSelectiveMcpSync(opts: {
+  from: AgentId;
+  to: AgentId[];
+  names: string[];
+  dryRun?: boolean;
+  apply: boolean;
+}): Promise<SelectiveMcpReport> {
+  const fromAdapter = findAdapter(opts.from);
+  if (!fromAdapter) throw new Error(`syncthis: unknown MCP source agent: ${opts.from}`);
+
+  const targetIds = [...new Set(opts.to)].filter((id) => id !== opts.from);
+  const names = [...new Set(opts.names.map((n) => n.trim()).filter(Boolean))].sort();
+  if (names.length === 0) throw new Error("syncthis: choose at least one MCP server");
+
+  const fromRead = await fromAdapter.read();
+  if (fromRead.error) throw new Error(`syncthis: cannot read source ${opts.from}: ${fromRead.error}`);
+
+  const selected: Record<string, McpServer> = {};
+  const notFound: string[] = [];
+  for (const name of names) {
+    const server = fromRead.servers[name];
+    if (server) selected[name] = server;
+    else notFound.push(name);
+  }
+
+  const targets = await Promise.all(
+    targetIds.map(async (id): Promise<SelectiveMcpTarget> => {
+      const adapter = findAdapter(id);
+      if (!adapter) throw new Error(`syncthis: unknown MCP destination agent: ${id}`);
+
+      const toRead = await adapter.read();
+      if (toRead.error) {
+        return {
+          to: id,
+          toRead,
+          add: [],
+          conflicts: [],
+          write: opts.apply ? { agent: id, path: toRead.path, status: "failed", message: toRead.error } : undefined,
+        };
+      }
+
+      const diff = diffServers(selected, toRead.servers);
+      const add = diff.add;
+      const conflicts = diff.overwrite;
+      if (!opts.apply || opts.dryRun || add.length === 0) {
+        return { to: id, toRead, add, conflicts };
+      }
+
+      const next: Record<string, McpServer> = { ...toRead.servers };
+      for (const name of add) next[name] = selected[name]!;
+      const write = await adapter.write(next, { dryRun: false });
+      return { to: id, toRead, add, conflicts, write };
+    }),
+  );
+
+  return { from: opts.from, to: targetIds, names, fromRead, notFound, targets, applied: opts.apply && !opts.dryRun };
 }
 
 export async function runRemove(opts: {

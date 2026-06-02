@@ -6,7 +6,7 @@ import * as TOML from "smol-toml";
 import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
 import { adapters } from "../src/adapters/index.ts";
-import { runSync, computeUnion, runDirectional, runFanOut, runRemove } from "../src/sync.ts";
+import { runSync, computeUnion, runDirectional, runFanOut, runRemove, runSelectiveMcpSync } from "../src/sync.ts";
 import { runDoctor } from "../src/doctor.ts";
 import type { McpServer } from "../src/types.ts";
 
@@ -378,6 +378,40 @@ describe("runSync (cross-pollinate)", () => {
 
     const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
     expect(cursor.mcpServers.gh).toEqual(STDIO);
+  });
+
+  test("selective MCP sync adds chosen servers without overwriting conflicts", async () => {
+    const sourceDup: McpServer = { type: "stdio", command: "source-version" };
+    const targetDup: McpServer = { type: "stdio", command: "target-version" };
+    await writeAgentJson(".claude.json", { gh: STDIO, dup: sourceDup });
+    await writeAgentJson(".cursor/mcp.json", { dup: targetDup });
+
+    const preview = await runSelectiveMcpSync({
+      from: "claude-code",
+      to: ["cursor", "gemini-cli"],
+      names: ["gh", "dup", "missing"],
+      apply: false,
+    });
+    expect(preview.notFound).toEqual(["missing"]);
+    expect(preview.targets.find((t) => t.to === "cursor")?.add).toEqual(["gh"]);
+    expect(preview.targets.find((t) => t.to === "cursor")?.conflicts).toEqual(["dup"]);
+    expect(preview.targets.find((t) => t.to === "gemini-cli")?.add).toEqual(["dup", "gh"]);
+
+    const applied = await runSelectiveMcpSync({
+      from: "claude-code",
+      to: ["cursor", "gemini-cli"],
+      names: ["gh", "dup", "missing"],
+      apply: true,
+    });
+    expect(applied.targets.some((t) => t.write?.status === "failed")).toBe(false);
+
+    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
+    expect(cursor.mcpServers.gh).toEqual(STDIO);
+    expect(cursor.mcpServers.dup).toEqual(targetDup);
+
+    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
+    expect(gemini.mcpServers.gh).toEqual(STDIO);
+    expect(gemini.mcpServers.dup).toEqual(sourceDup);
   });
 
   test("fan-out mirrors one clean source to every other agent", async () => {

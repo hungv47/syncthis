@@ -482,6 +482,7 @@ export async function addSkillsFromPlugins(
   opts: {
     dryRun?: boolean;
     agents?: AgentId[];
+    force?: boolean;
     onProgress?: (repo: string, i: number, total: number) => void;
   } = {},
 ): Promise<PluginSkillsReport> {
@@ -490,6 +491,22 @@ export async function addSkillsFromPlugins(
   const sources = await resolvePluginSkillSources();
   if (sources.length === 0) {
     return { ran: false, dryRun, agents, sources, results: [], message: "no skill-bearing plugins found in ~/.claude/plugins" };
+  }
+
+  if (opts.force) {
+    const results: SkillAddResult[] = [];
+    if (dryRun) {
+      for (const s of sources) results.push({ repo: s.repo, status: "added", message: "dry-run" });
+      return { ran: true, dryRun, agents, sources, results };
+    }
+
+    let i = 0;
+    for (const s of sources) {
+      i += 1;
+      opts.onProgress?.(s.repo, i, sources.length);
+      results.push(await addOne(s.repo, agents));
+    }
+    return { ran: true, dryRun, agents, sources, results };
   }
 
   // Skip repos already fully present (every skill name in the global list). New
