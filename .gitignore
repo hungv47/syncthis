@@ -37,7 +37,9 @@ logs
 # agent process artifacts (specs, plans, review/cleanup records)
 .agents/
 .forsvn/
+.serena/
 PLAN-*.md
 
 # internal working documents (handoffs, plans, agent-config notes) — kept locally, not published
 .internal/
+internal.local/
