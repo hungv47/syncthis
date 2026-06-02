@@ -164,24 +164,6 @@ async function marketplacePluginNames(installLocation: string): Promise<string[]
   return [];
 }
 
-// Skill names already installed globally, per `npx skills list -g --json`. Used to
-// skip source repos whose skills are all present already, so re-runs (and every
-// `syncthis run`) don't re-fetch every repo. Best-effort: any failure (npx
-// missing, bad JSON) yields an empty set, which simply disables the skip.
-async function installedSkillNames(): Promise<Set<string>> {
-  const res = await run("npx", ["-y", "skills", "list", "-g", "--json"], { timeoutMs: 60_000 });
-  if (!res.ok) return new Set();
-  try {
-    const arr = JSON.parse(res.stdout || "[]");
-    if (!Array.isArray(arr)) return new Set();
-    return new Set(
-      (arr as Array<{ name?: unknown }>).map((s) => s?.name).filter((n): n is string => typeof n === "string"),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
 // The skills CLI reports each skill's agents by human display label ("Hermes
 // Agent", "Gemini CLI", "GitHub Copilot"), not by syncthis AgentId. Map the labels
 // syncthis knows; an unknown label (e.g. "Warp", which has no MCP adapter) resolves
@@ -234,6 +216,18 @@ export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
   } catch {
     return null;
   }
+}
+
+async function installedSkillAgentsByName(): Promise<Map<string, Set<AgentId>>> {
+  const installed = await listInstalledSkills();
+  const map = new Map<string, Set<AgentId>>();
+  if (!installed) return map;
+  for (const skill of installed) {
+    const agents = map.get(skill.name) ?? new Set<AgentId>();
+    for (const agent of skill.agents) agents.add(agent);
+    map.set(skill.name, agents);
+  }
+  return map;
 }
 
 export type PluginDerivedSkills = { repo: string; marketplace: string; names: string[] };
@@ -509,22 +503,18 @@ export async function addSkillsFromPlugins(
     return { ran: true, dryRun, agents, sources, results };
   }
 
-  // Skip repos already fully present (every skill name in the global list). New
-  // plugins still get added; this is what keeps a repeat `run` from re-fetching.
-  // Deliberately coarse: keyed on global presence, not per-agent registration. We
-  // always add with the full cohort `-a` set, so global presence implies cohort
-  // coverage in practice. The only gap is a skill that entered the store via some
-  // other path (a manual single-agent `npx skills add`, or a newly added adapter
-  // widening the cohort) — rare, and resolved by a forced `skills from-plugins`.
-  // Not worth an 8× per-agent `skills list` probe + a brittle id→display-name map.
-  const [installed, sourceSkills] = await Promise.all([
-    installedSkillNames(),
+  // Skip a repo only when every skill it contributes is already registered on every
+  // requested target agent. A global name-only guard is not enough: if a skill was
+  // previously added to only some agents, later syncs must fill the missing agents
+  // instead of reporting the repo as "already synced".
+  const [installedAgents, sourceSkills] = await Promise.all([
+    installedSkillAgentsByName(),
     Promise.all(sources.map(async (source) => ({ source, names: await repoSkillNames(source.installLocation) }))),
   ]);
   const results: SkillAddResult[] = [];
   const toAdd: PluginSkillSource[] = [];
   for (const { source: s, names } of sourceSkills) {
-    if (names && names.every((n) => installed.has(n))) {
+    if (names && names.every((n) => agents.every((agent) => installedAgents.get(n)?.has(agent)))) {
       results.push({ repo: s.repo, status: "skipped", message: "already synced" });
     } else {
       toAdd.push(s);

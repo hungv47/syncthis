@@ -186,7 +186,7 @@ describe("addSkillsFromPlugins", () => {
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });
 
-  test("skips a repo whose every skill is already installed (the guard)", async () => {
+  test("skips a repo whose every skill is already installed on the requested agents", async () => {
     await writeMarketplaces({
       a: {
         source: { source: "github", repo: "owner/a" },
@@ -195,14 +195,14 @@ describe("addSkillsFromPlugins", () => {
         skills: ["x", "y"],
       },
     });
-    await installFakeNpx({ listJson: '[{"name":"x"},{"name":"y"}]' });
+    await installFakeNpx({ listJson: '[{"name":"x","agents":["OpenCode"]},{"name":"y","agents":["OpenCode"]}]' });
     const r = await addSkillsFromPlugins({ agents: ["opencode"] });
     expect(r.results).toEqual([{ repo: "owner/a", status: "skipped", message: "already synced" }]);
     const inv = await readInvocations();
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });
 
-  test("force mode adds plugin skills even when the global guard would skip", async () => {
+  test("adds a repo when its skills exist globally but are missing from the requested agent", async () => {
     await writeMarketplaces({
       a: {
         source: { source: "github", repo: "owner/a" },
@@ -211,7 +211,23 @@ describe("addSkillsFromPlugins", () => {
         skills: ["x"],
       },
     });
-    await installFakeNpx({ listJson: '[{"name":"x"}]' });
+    await installFakeNpx({ listJson: '[{"name":"x","agents":["Windsurf"]}]' });
+    const r = await addSkillsFromPlugins({ agents: ["opencode"] });
+    expect(r.results).toEqual([{ repo: "owner/a", status: "added" }]);
+    const inv = await readInvocations();
+    expect(inv.some((l) => /npx -y skills add owner\/a .* -a opencode -y/.test(l))).toBe(true);
+  });
+
+  test("force mode adds plugin skills even when the per-agent guard would skip", async () => {
+    await writeMarketplaces({
+      a: {
+        source: { source: "github", repo: "owner/a" },
+        installLocation: join(workDir, "mp", "a"),
+        withSkills: true,
+        skills: ["x"],
+      },
+    });
+    await installFakeNpx({ listJson: '[{"name":"x","agents":["OpenCode"]}]' });
     const r = await addSkillsFromPlugins({ agents: ["opencode"], force: true });
     expect(r.results).toEqual([{ repo: "owner/a", status: "added" }]);
     const inv = await readInvocations();
@@ -233,7 +249,7 @@ describe("addSkillsFromPlugins", () => {
         skills: ["y"],
       },
     });
-    await installFakeNpx({ listJson: '[{"name":"x"}]' });
+    await installFakeNpx({ listJson: '[{"name":"x","agents":["OpenCode"]}]' });
     const r = await addSkillsFromPlugins({ agents: ["opencode"] });
     expect(r.results).toEqual([
       { repo: "owner/a", status: "skipped", message: "already synced" },
@@ -257,7 +273,7 @@ describe("addSkillsFromPlugins", () => {
       join(dir, "known_marketplaces.json"),
       JSON.stringify({ a: { source: { source: "github", repo: "owner/a" }, installLocation: loc } }),
     );
-    await installFakeNpx({ listJson: '[{"name":"real-name"}]' });
+    await installFakeNpx({ listJson: '[{"name":"real-name","agents":["OpenCode"]}]' });
     const r = await addSkillsFromPlugins({ agents: ["opencode"] });
     expect(r.results).toEqual([{ repo: "owner/a", status: "skipped", message: "already synced" }]);
     const inv = await readInvocations();
@@ -273,7 +289,7 @@ describe("addSkillsFromPlugins", () => {
         skills: ["x", "y"],
       },
     });
-    await installFakeNpx({ listJson: '[{"name":"x"}]' }); // y still missing
+    await installFakeNpx({ listJson: '[{"name":"x","agents":["OpenCode"]}]' }); // y still missing
     const r = await addSkillsFromPlugins({ agents: ["opencode"] });
     expect(r.results[0]!.status).toBe("added");
     const inv = await readInvocations();

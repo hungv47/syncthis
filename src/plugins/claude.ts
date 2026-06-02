@@ -1,4 +1,4 @@
-import { expandHome } from "../io.ts";
+import { expandHome, readJson } from "../io.ts";
 import { assertSafeIdentifier, parsePluginId, run } from "./shell.ts";
 import type {
   PluginAdapter,
@@ -11,6 +11,8 @@ import type {
 } from "./types.ts";
 
 const CONFIG_PATH = "~/.claude.json";
+const INSTALLED_PLUGINS_PATH = "~/.claude/plugins/installed_plugins.json";
+const KNOWN_MARKETPLACES_PATH = "~/.claude/plugins/known_marketplaces.json";
 
 type ClaudePluginListItem = {
   id: string;
@@ -18,6 +20,30 @@ type ClaudePluginListItem = {
   scope?: string;
   enabled?: boolean;
   installPath?: string;
+};
+
+type ClaudeInstalledPluginEntry = {
+  version?: unknown;
+  scope?: unknown;
+  enabled?: unknown;
+  installPath?: unknown;
+};
+
+type ClaudeInstalledPluginsState = {
+  plugins?: unknown;
+};
+
+type ClaudeMarketplaceListItem = {
+  name?: unknown;
+  source?: unknown;
+  repo?: unknown;
+};
+
+type ClaudeKnownMarketplaceEntry = {
+  source?: {
+    source?: unknown;
+    repo?: unknown;
+  };
 };
 
 // The `claude` CLI loads every plugin/MCP on startup, so a cold invocation can run
@@ -32,6 +58,89 @@ function resolvedConfigPath(): string {
   return expandHome(CONFIG_PATH);
 }
 
+function pluginRecord(id: string, fields: ClaudeInstalledPluginEntry): PluginRecord {
+  const { name, marketplace } = parsePluginId(id);
+  return {
+    name,
+    marketplace,
+    version: typeof fields.version === "string" ? fields.version : undefined,
+    enabled: typeof fields.enabled === "boolean" ? fields.enabled : undefined,
+    scope: typeof fields.scope === "string" ? fields.scope : undefined,
+    path: typeof fields.installPath === "string" ? fields.installPath : undefined,
+  };
+}
+
+function parseCliPluginList(raw: unknown): PluginRecord[] | null {
+  if (!Array.isArray(raw)) return null;
+  const plugins: PluginRecord[] = [];
+  for (const item of raw as ClaudePluginListItem[]) {
+    if (!item || typeof item !== "object" || typeof item.id !== "string") continue;
+    plugins.push(pluginRecord(item.id, item));
+  }
+  return plugins;
+}
+
+export function parseClaudeInstalledPlugins(raw: unknown): PluginRecord[] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const state = raw as ClaudeInstalledPluginsState;
+  const map = state.plugins;
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+
+  const plugins: PluginRecord[] = [];
+  for (const [id, installsRaw] of Object.entries(map as Record<string, unknown>)) {
+    if (typeof id !== "string") continue;
+    const installs = Array.isArray(installsRaw) ? installsRaw : [installsRaw];
+    for (const install of installs) {
+      if (!install || typeof install !== "object" || Array.isArray(install)) continue;
+      plugins.push(pluginRecord(id, install as ClaudeInstalledPluginEntry));
+    }
+  }
+  return plugins;
+}
+
+async function readInstalledPluginState(): Promise<PluginRecord[] | null> {
+  try {
+    return parseClaudeInstalledPlugins(await readJson(expandHome(INSTALLED_PLUGINS_PATH)));
+  } catch {
+    return null;
+  }
+}
+
+function parseMarketplaceCliSources(raw: unknown): Map<string, string> | null {
+  if (!Array.isArray(raw)) return null;
+  const map = new Map<string, string>();
+  for (const m of raw as ClaudeMarketplaceListItem[]) {
+    if (typeof m?.name === "string" && m.source === "github" && typeof m.repo === "string") {
+      map.set(m.name, m.repo);
+    }
+  }
+  return map;
+}
+
+function parseKnownMarketplaceSources(raw: unknown): Map<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const map = new Map<string, string>();
+  for (const [name, entry] of Object.entries(raw as Record<string, ClaudeKnownMarketplaceEntry>)) {
+    const source = entry?.source;
+    if (source?.source === "github" && typeof source.repo === "string") map.set(name, source.repo);
+  }
+  return map;
+}
+
+async function readKnownMarketplaceSources(): Promise<Map<string, string> | null> {
+  try {
+    return parseKnownMarketplaceSources(await readJson(expandHome(KNOWN_MARKETPLACES_PATH)));
+  } catch {
+    return null;
+  }
+}
+
+async function fallbackRead(error: string, base: PluginAdapterRead): Promise<PluginAdapterRead> {
+  const fallback = await readInstalledPluginState();
+  if (fallback) return { ...base, exists: true, plugins: fallback };
+  return { ...base, error };
+}
+
 export const claudePluginAdapter: PluginAdapter = {
   id: "claude-code",
   configPath: resolvedConfigPath,
@@ -44,27 +153,21 @@ export const claudePluginAdapter: PluginAdapter = {
     };
 
     const pluginsRes = await run("claude", ["plugin", "list", "--json"], { timeoutMs: READ_TIMEOUT_MS });
-    if (pluginsRes.notFound) return { ...base, error: "claude CLI not found on PATH" };
-    if (!pluginsRes.ok) return { ...base, error: pluginsRes.stderr.trim() || `claude plugin list exit ${pluginsRes.exitCode}` };
+    if (pluginsRes.notFound) return fallbackRead("claude CLI not found on PATH", base);
+    if (!pluginsRes.ok) {
+      return fallbackRead(pluginsRes.stderr.trim() || `claude plugin list exit ${pluginsRes.exitCode}`, base);
+    }
 
-    let pluginsRaw: ClaudePluginListItem[] = [];
+    let pluginsRaw: unknown;
     try {
       pluginsRaw = JSON.parse(pluginsRes.stdout || "[]");
     } catch (err) {
-      return { ...base, error: `claude plugin list: invalid JSON (${(err as Error).message})` };
+      const maybeTruncated = pluginsRes.stdout.length === 65_536 ? "; output was exactly 65536 bytes, likely truncated" : "";
+      return fallbackRead(`claude plugin list: invalid JSON (${(err as Error).message}${maybeTruncated})`, base);
     }
 
-    const plugins: PluginRecord[] = pluginsRaw.map((p) => {
-      const { name, marketplace } = parsePluginId(p.id);
-      return {
-        name,
-        marketplace,
-        version: p.version,
-        enabled: p.enabled,
-        scope: p.scope,
-        path: p.installPath,
-      };
-    });
+    const plugins = parseCliPluginList(pluginsRaw);
+    if (!plugins) return fallbackRead("claude plugin list: unexpected JSON shape", base);
 
     return { ...base, exists: true, plugins };
   },
@@ -73,20 +176,15 @@ export const claudePluginAdapter: PluginAdapter = {
   // Lets the mirror tell a target (Codex) where to provision a plugin whose
   // marketplace it lacks. Local/non-github sources are omitted (no repo to add).
   async marketplaceSources(): Promise<Map<string, string> | null> {
-    const map = new Map<string, string>();
     const res = await run("claude", ["plugin", "marketplace", "list", "--json"], { timeoutMs: READ_TIMEOUT_MS });
-    if (!res.ok) return null;
+    if (!res.ok) return readKnownMarketplaceSources();
     let raw: unknown;
     try {
       raw = JSON.parse(res.stdout || "[]");
     } catch {
-      return null;
+      return readKnownMarketplaceSources();
     }
-    if (!Array.isArray(raw)) return null;
-    for (const m of raw as Array<{ name?: string; source?: string; repo?: string }>) {
-      if (m.name && m.source === "github" && m.repo) map.set(m.name, m.repo);
-    }
-    return map;
+    return parseMarketplaceCliSources(raw) ?? readKnownMarketplaceSources();
   },
 
   async installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult> {

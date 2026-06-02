@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { codexPluginAdapter, parseCodexPluginList } from "../src/plugins/codex.ts";
-import { claudePluginAdapter } from "../src/plugins/claude.ts";
+import { claudePluginAdapter, parseClaudeInstalledPlugins } from "../src/plugins/claude.ts";
 
 let workDir: string;
 let originalHome: string | undefined;
@@ -78,6 +78,18 @@ echo "unexpected: $@" >&2; exit 99
   await writeFile(claudePath, script);
   await chmod(claudePath, 0o755);
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+}
+
+async function writeClaudeInstalledPlugins(plugins: Record<string, unknown>) {
+  const dir = join(workDir, ".claude", "plugins");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "installed_plugins.json"), JSON.stringify({ version: 2, plugins }));
+}
+
+async function writeClaudeKnownMarketplaces(marketplaces: Record<string, unknown>) {
+  const dir = join(workDir, ".claude", "plugins");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "known_marketplaces.json"), JSON.stringify(marketplaces));
 }
 
 const CODEX_SAMPLE: CodexRow[] = [
@@ -167,6 +179,46 @@ describe("claude plugin adapter", () => {
     expect(noscope?.enabled).toBe(false);
   });
 
+  test("falls back to installed_plugins.json when claude --json output is truncated", async () => {
+    await installFakeClaude("[".padEnd(65_536, " "));
+    await writeClaudeInstalledPlugins({
+      "foo@mkt": [
+        {
+          version: "1.2.3",
+          scope: "user",
+          installPath: "/x/foo",
+        },
+      ],
+      "bar@mkt": [
+        {
+          version: "0.0.1",
+          scope: "project",
+          installPath: "/x/bar",
+        },
+      ],
+    });
+
+    const r = await claudePluginAdapter.read();
+    expect(r.error).toBeUndefined();
+    expect(r.exists).toBe(true);
+    expect(r.plugins.map((p) => `${p.name}@${p.marketplace}:${p.version}:${p.scope}:${p.path}`).sort()).toEqual([
+      "bar@mkt:0.0.1:project:/x/bar",
+      "foo@mkt:1.2.3:user:/x/foo",
+    ]);
+  });
+
+  test("parseClaudeInstalledPlugins handles Claude's state-file schema", () => {
+    const plugins = parseClaudeInstalledPlugins({
+      version: 2,
+      plugins: {
+        "foo@mkt": [{ version: "1.0.0", scope: "user", installPath: "/x/foo" }],
+      },
+    });
+    expect(plugins).toEqual([
+      { name: "foo", marketplace: "mkt", version: "1.0.0", enabled: undefined, scope: "user", path: "/x/foo" },
+    ]);
+  });
+
   test("returns error when claude CLI not on PATH", async () => {
     process.env.PATH = "/nonexistent-bin-dir-syncthis-test";
     const r = await claudePluginAdapter.read();
@@ -188,6 +240,17 @@ describe("claude plugin adapter", () => {
     expect(map!.get("claude-code-warp")).toBe("warpdotdev/claude-code-warp");
     expect(map!.has("local-mkt")).toBe(false); // non-github omitted
     expect(map!.has("no-repo")).toBe(false); // no repo omitted
+  });
+
+  test("marketplaceSources falls back to known_marketplaces.json", async () => {
+    await installFakeClaude("[]", "{not json");
+    await writeClaudeKnownMarketplaces({
+      mkt: { source: { source: "github", repo: "owner/repo" } },
+      local: { source: { source: "local", repo: "owner/local" } },
+    });
+    const map = await claudePluginAdapter.marketplaceSources!();
+    expect(map?.get("mkt")).toBe("owner/repo");
+    expect(map?.has("local")).toBe(false);
   });
 
   test("marketplaceSources returns null on non-array JSON (read failure)", async () => {
