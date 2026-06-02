@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
+import { spawn } from "node:child_process";
+import { readFile, realpath } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { AgentId, RowStatus } from "../src/types.ts";
+
+const SELF_PACKAGE = "@hungv47/syncthis";
+const UPDATE_TIMEOUT_MS = 300_000;
 
 const HELP = `syncthis — keep your AI tools in sync
 
@@ -24,6 +31,8 @@ usage:
   syncthis skills                            skills only — \`npx skills update -y\`
   syncthis skills from-plugins [--dry-run]   add skills bundled in Claude plugins to the 8
                                              non-plugin agents (opencode, gemini-cli, windsurf, …)
+  syncthis update [--dry-run]                update syncthis itself to the latest npm version
+  syncthis version                           print the installed syncthis version
   syncthis <from> <to> [--yes] [--dry-run]   one-way mirror MCP from one agent to another
   syncthis from <agent> --all [--yes] [--dry-run]
                                              one-way mirror MCP from one agent to every other agent
@@ -202,6 +211,97 @@ function printPluginSkills(r: import("../src/skills.ts").PluginSkillsReport, dry
   for (const res of r.results) {
     if (res.status === "failed") console.log(`      ${red("✗")} ${res.repo} ${dim(res.message ?? "")}`);
   }
+}
+
+async function cmdUpdate(argv: string[]) {
+  const sub = argv[0];
+  if (sub === "help" || sub === "-h" || sub === "--help") {
+    console.log("syncthis update [--dry-run] — update syncthis itself to the latest npm version");
+    return;
+  }
+  const { values, positionals } = parse(argv);
+  if (positionals.length) {
+    console.error(red(`update: unexpected argument(s): ${positionals.join(", ")}`));
+    process.exit(2);
+  }
+
+  const command = await resolveSelfUpdateCommand();
+  const display = [command.cmd, ...command.args].join(" ");
+  if (values["dry-run"]) {
+    row("skipped", "update", SELF_PACKAGE, `would run: ${display}`);
+    return;
+  }
+
+  console.log(`Updating syncthis with ${green(display)}`);
+  const result = await runInherited(command.cmd, command.args, UPDATE_TIMEOUT_MS);
+  if (result.ok) {
+    row("synced", "update", SELF_PACKAGE, "updated to latest");
+    return;
+  }
+  const message = result.notFound
+    ? `${command.cmd} not found on PATH`
+    : result.timedOut
+      ? `timed out after ${UPDATE_TIMEOUT_MS / 1000}s`
+      : result.message ?? `exit ${result.exitCode}`;
+  row("failed", "update", SELF_PACKAGE, message);
+  process.exit(result.exitCode > 0 ? result.exitCode : 1);
+}
+
+async function cmdVersion() {
+  console.log(await readSelfVersion());
+}
+
+async function readSelfVersion(): Promise<string> {
+  try {
+    const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
+    const raw = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+    return typeof raw.version === "string" ? raw.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function resolveSelfUpdateCommand(): Promise<{ cmd: string; args: string[] }> {
+  const userAgent = process.env.npm_config_user_agent ?? "";
+  const entry = process.argv[1] ? await realpath(process.argv[1]).catch(() => process.argv[1] ?? "") : "";
+  const prefersBun = userAgent.startsWith("bun/") || entry.includes("/.bun/") || entry.includes("\\.bun\\");
+  if (prefersBun) return { cmd: "bun", args: ["install", "-g", `${SELF_PACKAGE}@latest`] };
+  return { cmd: "npm", args: ["install", "-g", `${SELF_PACKAGE}@latest`] };
+}
+
+function runInherited(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ ok: boolean; exitCode: number; notFound: boolean; timedOut: boolean; message?: string }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    const child = spawn(cmd, args, { stdio: "inherit", env: process.env });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    const finish = (result: { ok: boolean; exitCode: number; notFound: boolean; timedOut: boolean; message?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      finish({
+        ok: false,
+        exitCode: -1,
+        notFound: err.code === "ENOENT",
+        timedOut,
+        message: err.message,
+      });
+    });
+    child.on("close", (code) => {
+      const exitCode = code ?? -1;
+      finish({ ok: exitCode === 0 && !timedOut, exitCode, notFound: false, timedOut });
+    });
+  });
 }
 
 async function cmdDoctor() {
@@ -1145,10 +1245,12 @@ async function main() {
   }
 
   if (cmd === "help" || cmd === "-h" || cmd === "--help") return console.log(HELP);
+  if (cmd === "version" || cmd === "--version" || cmd === "-v") return cmdVersion();
   if (cmd === "sync") return cmdSync(rest);
   if (cmd === "run") return cmdSync(rest);
   if (cmd === "mcp") return cmdMcp(rest);
   if (cmd === "skills") return cmdSkills(rest);
+  if (cmd === "update") return cmdUpdate(rest);
   if (cmd === "doctor") return cmdDoctor();
   if (cmd === "mirror") return cmdMirror(rest);
   if (cmd === "from") return cmdFanOut(rest);

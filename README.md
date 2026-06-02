@@ -80,6 +80,8 @@ syncthis run    [--dry-run] [--no-skills]   # MCP + skills (alias for sync)
 syncthis sync   [--dry-run] [--no-skills]   # same as run
 syncthis mcp    [--dry-run]                 # MCP only — skip skills update
 syncthis skills                             # skills only — `npx skills update -y`
+syncthis update [--dry-run]                 # update syncthis itself to latest
+syncthis version                            # print the installed syncthis version
 syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
 syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
 syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
@@ -106,6 +108,7 @@ syncthis help
 `--no-provision` (mirror) skips registering missing Codex marketplaces and the Codex skills-fallback — Codex installs only the plugins it can already resolve. (The Cursor push and the non-plugin-agent skills push still run; those are the mirror's payload, not provisioning.) By default mirror provisions: it registers a plugin's source marketplace on the target (`npx plugins add` — hits the network), and adds bundles a target can't load as plugins as skills (`npx skills add`).
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
+`syncthis update` runs the global latest install command (`npm install -g @hungv47/syncthis@latest`, or Bun's global install when the current executable comes from Bun).
 
 ## Supported agents
 
