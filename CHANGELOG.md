@@ -2,6 +2,15 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.13.0] — 2026-06-03
+
+### Changed
+- **Network-free, idempotent plugin install via the source's local marketplace clone.** Transferring a Claude plugin to Codex (`add plugin`, `mirror`, and the interactive plugin sync) now registers the source's on-disk marketplace clone on the target — `codex plugin marketplace add <clonePath>` (reused when already registered by root or name, never re-added) — then `codex plugin add <name>@<marketplace>`. No `npx plugins` fetch, no network round-trip, and no duplicate marketplace rows in `~/.codex/config.toml`. `npx plugins` provisioning remains a guarded fallback only when no local clone exists. New pure resolver `src/plugins/marketplace.ts` (`parseMarketplaceList`, `readLocalMarketplace`, `resolveLocalMarketplace`); new `PluginInstallOpts.sourceClonePath`; Claude clone paths resolved from `known_marketplaces.json` and threaded through `add.ts` / `mirror.ts`. A URL-named install id or multi-plugin alias whose manifest name differs from the entry name still falls through to the existing coverage/skills-fallback path, so behavior there is unchanged.
+
+### Added
+- **Discoverable select-all in the interactive picker.** The multi-select now renders a visible `select all (N)` control row, and — for grouped lists like plugins by marketplace — a per-group `<marketplace> (N)` select-all row, alongside the existing `a` shortcut. Plugins default to those installed on the source agent, grouped by marketplace, with a toggle to show all available marketplace clones (installed-and-not). New tested `src/picker-logic.ts` (`buildRows`, `nextSelectionForRow`, `groupPluginsByMarketplace`) holds the pure selection/grouping logic, decoupled from the terminal.
+- **Share installed skills agent → agent.** A new interactive skills flow picks a source agent, its installed skills, and destination agents, then adds each skill to the destinations using the skill's own on-disk store path as the `npx skills add` source — no dir-copy that would corrupt the shared `~/.agents/skills/` symlink store.
+
 ## [0.12.4] — 2026-06-02
 
 ### Fixed
