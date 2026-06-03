@@ -192,7 +192,10 @@ export function skillAgentLabelToId(label: string): AgentId | undefined {
   return SKILL_AGENT_LABELS[label.trim().toLowerCase()];
 }
 
-export type InstalledSkill = { name: string; agents: AgentId[] };
+// `path` is the skill's location in the shared store (~/.agents/skills/<name>) — a
+// self-contained skill dir usable as a `npx skills add <path>` source to surface the
+// same skill onto another agent (the store is shared; per-agent dirs are symlinks).
+export type InstalledSkill = { name: string; path: string; agents: AgentId[] };
 
 // Every globally-installed skill with the agents it's registered on, from
 // `npx skills list -g --json`. Returns null when the CLI can't be read (missing
@@ -203,9 +206,10 @@ export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
   try {
     const arr = JSON.parse(res.stdout || "[]");
     if (!Array.isArray(arr)) return null;
-    return (arr as Array<{ name?: unknown; agents?: unknown }>)
+    return (arr as Array<{ name?: unknown; path?: unknown; agents?: unknown }>)
       .map((s) => ({
         name: typeof s?.name === "string" ? s.name : "",
+        path: typeof s?.path === "string" ? s.path : "",
         agents: Array.isArray(s?.agents)
           ? (s.agents as unknown[])
               .map((a) => (typeof a === "string" ? skillAgentLabelToId(a) : undefined))
@@ -327,13 +331,15 @@ export function addArgs(repo: string, agents: readonly AgentId[]): string[] {
   return args;
 }
 
-function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResult> {
+// Run one `npx skills add …` invocation. `key` is the value reported back as
+// `repo` (a source repo for repo-adds, or a skill name for installed-skill shares).
+function runSkillAdd(args: string[], key: string): Promise<SkillAddResult> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn("npx", addArgs(repo, agents), {
+    const child = spawn("npx", args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     });
@@ -352,20 +358,62 @@ function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResul
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (d: string) => (stdout += d));
     child.stderr?.on("data", (d: string) => (stderr += d));
-    child.on("error", (err: Error) => finish({ repo, status: "failed", message: err.message }));
+    child.on("error", (err: Error) => finish({ repo: key, status: "failed", message: err.message }));
     child.on("close", (code) => {
-      if (timedOut) return finish({ repo, status: "failed", message: `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s` });
-      if (code === 0) return finish({ repo, status: "added" });
+      if (timedOut) return finish({ repo: key, status: "failed", message: `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s` });
+      if (code === 0) return finish({ repo: key, status: "added" });
       const blob = `${stdout}\n${stderr}`;
       const tail = stderr.trim().split("\n").pop() || stdout.trim().split("\n").pop() || "";
-      // The skills CLI exits non-zero when a repo has no installable skills. That's
+      // The skills CLI exits non-zero when a source has no installable skills. That's
       // not a failure for us — the pre-filter should avoid it, but tolerate it.
       if (/no skills?\b|no SKILL\.md|nothing to (install|add)/i.test(blob)) {
-        return finish({ repo, status: "skipped", message: "no skills found" });
+        return finish({ repo: key, status: "skipped", message: "no skills found" });
       }
-      finish({ repo, status: "failed", message: `exit ${code}: ${tail}` });
+      finish({ repo: key, status: "failed", message: `exit ${code}: ${tail}` });
     });
   });
+}
+
+function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResult> {
+  return runSkillAdd(addArgs(repo, agents), repo);
+}
+
+// `npx skills add <storePath> -g -s <name> -a <agent>… -y` — surface a single
+// already-installed skill (sourced from its shared-store dir) onto more agents.
+export function installedAddArgs(storePath: string, name: string, agents: readonly AgentId[]): string[] {
+  const args = ["-y", "skills", "add", storePath, "-g", "-s", name];
+  for (const a of agents) args.push("-a", a);
+  args.push("-y");
+  return args;
+}
+
+export type InstalledSkillRef = { name: string; path: string };
+
+// Share already-installed skills (from the shared store) onto a set of agents — the
+// interactive "bring this agent's skills to those agents" flow. The store is global,
+// so this just adds the agent symlinks; the source agent is irrelevant to the
+// mechanism. One `npx skills add <path>` per skill, sequentially (concurrent invocations
+// race on the shared agent skill directories). Skips a skill with an unsafe name or no
+// resolvable store path rather than shelling out blindly.
+export async function addInstalledSkillsToAgents(
+  skills: InstalledSkillRef[],
+  agents: readonly AgentId[],
+  opts: { dryRun?: boolean } = {},
+): Promise<SkillAddResult[]> {
+  const out: SkillAddResult[] = [];
+  if (agents.length === 0) return out;
+  for (const sk of skills) {
+    if (!isSafeSkillName(sk.name) || !sk.path) {
+      out.push({ repo: sk.name, status: "failed", message: sk.path ? "unsafe skill name" : "no store path" });
+      continue;
+    }
+    if (opts.dryRun) {
+      out.push({ repo: sk.name, status: "added", message: "dry-run" });
+      continue;
+    }
+    out.push(await runSkillAdd(installedAddArgs(sk.path, sk.name, agents), sk.name));
+  }
+  return out;
 }
 
 // Install specific source repos as loose skills into specific agents. Used by the

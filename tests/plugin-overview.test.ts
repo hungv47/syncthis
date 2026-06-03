@@ -102,7 +102,7 @@ describe("listInstalledSkills", () => {
       skillsListJson: '[{"name":"alpha","agents":["OpenCode","Warp"]}]',
     });
     const skills = await listInstalledSkills();
-    expect(skills).toEqual([{ name: "alpha", agents: ["opencode"] }]); // "Warp" dropped
+    expect(skills).toEqual([{ name: "alpha", path: "", agents: ["opencode"] }]); // "Warp" dropped
   });
 });
 

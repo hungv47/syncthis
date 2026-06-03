@@ -11,10 +11,29 @@ import {
 } from "./sync.ts";
 import { runDoctor } from "./doctor.ts";
 import { listPlugins, pluginAdapters } from "./plugins/index.ts";
+import { claudeMarketplaceClonePaths } from "./plugins/claude.ts";
+import { readLocalMarketplace } from "./plugins/marketplace.ts";
 import { buildPluginOverview } from "./plugins/overview.ts";
 import { runPluginUninstall, uninstallHasChanges } from "./plugins/uninstall.ts";
 import { runPluginAdd, pluginAddHasWork, type PluginAddReport } from "./plugins/add.ts";
-import { addSkillRepos, addSkillsFromPlugins, listInstalledSkills, removeSkillNames, skillCohort } from "./skills.ts";
+import {
+  addInstalledSkillsToAgents,
+  addSkillRepos,
+  addSkillsFromPlugins,
+  listInstalledSkills,
+  removeSkillNames,
+  skillCohort,
+} from "./skills.ts";
+import {
+  buildRows,
+  groupPluginsByMarketplace,
+  isAllSelected,
+  isGroupSelected,
+  itemValues,
+  nextSelectionForRow,
+  type PickerItem,
+  type PickerRow,
+} from "./picker-logic.ts";
 import type { AgentId } from "./types.ts";
 import type { PluginRecord } from "./plugins/types.ts";
 
@@ -30,7 +49,7 @@ export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
 
   note(
-    "Pick a capability type first. Each manager asks for source, items, destinations, then preview/confirm.",
+    "Pick what to manage. Each flow: source → items (space toggles, a selects all) → destinations → preview → confirm.",
     "what is this?",
   );
 
@@ -38,7 +57,7 @@ export async function showInteractivePicker(): Promise<void> {
     while (true) {
       const choice = await pickOne<MainChoice>("What do you want to manage?", [
         { value: "plugins", label: "Manage plugins", hint: "sync, list, remove" },
-        { value: "skills", label: "Manage skills", hint: "add, update, sync from plugins, remove" },
+        { value: "skills", label: "Manage skills", hint: "share, add, sync from plugins, remove" },
         { value: "mcp", label: "Manage MCPs", hint: "sync or remove MCP servers" },
         { value: "doctor", label: "Check problems", hint: "MCP coverage + conflicts" },
         { value: "quit", label: "Quit" },
@@ -78,7 +97,7 @@ export async function showInteractivePicker(): Promise<void> {
 
 async function managePlugins(): Promise<MenuResult> {
   const op = await pickOne<"sync" | "list" | "remove" | "back">("Plugins: what do you want to do?", [
-    { value: "sync", label: "Sync plugins", hint: "choose source, one/few/all plugins, then destinations" },
+    { value: "sync", label: "Sync plugins", hint: "choose source, plugins (grouped by marketplace), then destinations" },
     { value: "list", label: "List installed plugins", hint: "read-only overview" },
     { value: "remove", label: "Remove plugins", hint: "guarded uninstall + surfaced skill removal" },
     { value: "back", label: "Back" },
@@ -91,15 +110,20 @@ async function managePlugins(): Promise<MenuResult> {
 }
 
 async function manageSkills(): Promise<MenuResult> {
-  const op = await pickOne<"add" | "plugin-derived" | "update" | "remove" | "back">("Skills: what do you want to do?", [
-    { value: "add", label: "Add from repo", hint: "npx skills add <repo>" },
-    { value: "plugin-derived", label: "Sync from plugins", hint: "surface Claude plugin skills to chosen agents" },
-    { value: "update", label: "Update installed skills", hint: "npx skills update -y" },
-    { value: "remove", label: "Remove skills", hint: "guarded npx skills remove" },
-    { value: "back", label: "Back" },
-  ]);
+  const op = await pickOne<"share" | "add" | "plugin-derived" | "update" | "remove" | "back">(
+    "Skills: what do you want to do?",
+    [
+      { value: "share", label: "Share installed skills", hint: "copy a source agent's skills to other agents" },
+      { value: "add", label: "Add from repo", hint: "npx skills add <repo>" },
+      { value: "plugin-derived", label: "Sync from plugins", hint: "surface Claude plugin skills to chosen agents" },
+      { value: "update", label: "Update installed skills", hint: "npx skills update -y" },
+      { value: "remove", label: "Remove skills", hint: "guarded npx skills remove" },
+      { value: "back", label: "Back" },
+    ],
+  );
   if (!op || op === "back") return "back";
-  if (op === "add") await addSkillsFromRepo();
+  if (op === "share") await shareSkills();
+  else if (op === "add") await addSkillsFromRepo();
   else if (op === "plugin-derived") await syncPluginDerivedSkills();
   else if (op === "update") await doSkills();
   else await removeSkills();
@@ -194,8 +218,11 @@ async function doPluginList() {
 }
 
 async function syncPlugins() {
+  // Claude is the only agent that can supply plugins to others (it exposes the
+  // marketplace → repo map AND keeps every marketplace cloned on disk for the
+  // network-free local-marketplace install). Present that honestly.
   const source = await pickOne<AgentId>("plugin source agent", [
-    { value: "claude-code", label: "claude-code", hint: "required for GitHub repo fallback into skills/MCPs" },
+    { value: "claude-code", label: "claude-code", hint: "the only agent that can supply plugins to others" },
   ]);
   if (!source) return;
 
@@ -206,8 +233,23 @@ async function syncPlugins() {
     log.error(`can't read ${source}: ${read.error}`);
     return;
   }
+  if (read.plugins.length === 0) {
+    log.info(`no plugins installed on ${source}.`);
+    return;
+  }
 
-  const plugins = await pickMany("choose plugin(s) to sync", pluginOptions(read.plugins));
+  const scope = await pickOne<"installed" | "available">("which plugins to list?", [
+    { value: "installed", label: `installed on ${source}`, hint: `${read.plugins.length} plugin(s) — what can be transferred` },
+    { value: "available", label: "all available in marketplaces", hint: "browse the full set; uninstalled ones can't transfer" },
+  ]);
+  if (!scope) return;
+
+  const items =
+    scope === "available"
+      ? await allAvailablePluginItems(read.plugins)
+      : groupPluginsByMarketplace(read.plugins.map((p) => ({ name: p.name, marketplace: p.marketplace, installed: true })));
+
+  const plugins = await pickPlugins("choose plugin(s) to sync", items);
   if (!plugins) return;
 
   const targets = pluginTargetAgents(source);
@@ -219,14 +261,14 @@ async function syncPlugins() {
     log.error(`can't read claude-code (the source): ${preview.sourceError}`);
     return;
   }
-  if (preview.notFound.length) log.warn(`not installed on claude-code: ${preview.notFound.join(", ")}`);
+  if (preview.notFound.length) log.warn(`not installed on ${source} (can't transfer): ${preview.notFound.join(", ")}`);
   printPluginAddPreview(preview);
   if (!pluginAddHasWork(preview)) {
     log.success("nothing to do.");
     return;
   }
 
-  if (!(await confirmYes(`apply plugin sync from ${source}? native agents get plugins; non-plugin agents get derived skills/MCPs.`))) return;
+  if (!(await confirmYes(`apply plugin sync from ${source}? plugin agents get plugins; non-plugin agents get derived skills/MCPs.`))) return;
   const s = spinner();
   s.start("Syncing plugins...");
   const applied = await runPluginAdd({
@@ -240,6 +282,29 @@ async function syncPlugins() {
   });
   s.stop("Plugin sync applied.");
   printPluginAddApplied(applied);
+}
+
+// Every plugin available across Claude's cloned marketplaces, installed or not.
+// Installed ones come first (no hint); the rest are flagged "not installed" — they
+// show for browsing but a sync tool can't transfer them (runPluginAdd reports them
+// as notFound). Grouped by marketplace for the picker.
+async function allAvailablePluginItems(installed: PluginRecord[]): Promise<PickerItem[]> {
+  const installedKeys = new Set(installed.map((p) => `${p.name} ${p.marketplace ?? ""}`));
+  const records: { name: string; marketplace?: string; installed?: boolean }[] = installed.map((p) => ({
+    name: p.name,
+    marketplace: p.marketplace,
+    installed: true,
+  }));
+  const clones = await claudeMarketplaceClonePaths();
+  for (const [marketplace, clonePath] of clones) {
+    const mp = await readLocalMarketplace(clonePath);
+    if (!mp) continue;
+    for (const name of mp.pluginNames) {
+      if (installedKeys.has(`${name} ${marketplace}`)) continue;
+      records.push({ name, marketplace, installed: false });
+    }
+  }
+  return groupPluginsByMarketplace(records);
 }
 
 async function removePlugins() {
@@ -303,6 +368,62 @@ async function removePlugins() {
   }
   if (failed > 0) log.error(`${removed} removed, ${failed} failed - run \`syncthis plugin rm\` for detail`);
   else log.success(`remove complete: ${removed} removed.`);
+}
+
+// Share already-installed skills from a chosen source agent onto other agents. The
+// skills store is shared (~/.agents/skills), so this just adds the destination agents'
+// symlinks via `npx skills add <storePath> -a <dest>` — but the source-agent framing
+// matches the plugin/MCP flow ("bring this agent's skills to those agents").
+async function shareSkills() {
+  const installed = await listInstalledSkills();
+  if (!installed || installed.length === 0) {
+    log.info("no installed skills found (or `npx skills list` unavailable).");
+    return;
+  }
+  const sourceAgents = dedupe(installed.flatMap((s) => s.agents)).sort();
+  if (sourceAgents.length === 0) {
+    log.info("no skills are registered on any agent syncthis knows.");
+    return;
+  }
+
+  const source = await pickOne<AgentId>(
+    "skills: source agent (whose skills to share)",
+    sourceAgents.map((a) => ({ value: a, label: a })),
+  );
+  if (!source) return;
+
+  const onSource = installed.filter((s) => s.agents.includes(source));
+  if (onSource.length === 0) {
+    log.info(`no skills on ${source}.`);
+    return;
+  }
+
+  const names = await pickMany(
+    "choose skill(s) to share",
+    onSource.map((s) => ({ value: s.name, label: s.name })),
+  );
+  if (!names) return;
+
+  const dests = await pickAgents(skillTargetAgents().filter((a) => a !== source), "share to which agent(s)?");
+  if (!dests) return;
+
+  const pathByName = new Map(installed.map((s) => [s.name, s.path]));
+  const refs = names.map((n) => ({ name: n, path: pathByName.get(n) ?? "" }));
+  log.info(`will add ${refs.length} skill(s) to ${dests.join(", ")}`);
+  if (!(await confirmYes("apply skill share?"))) return;
+
+  const s = spinner();
+  s.start("Sharing skills...");
+  const results = await addInstalledSkillsToAgents(refs, dests).catch((err) => {
+    s.stop("Share failed.");
+    throw err;
+  });
+  s.stop("Done.");
+  const added = results.filter((r) => r.status === "added").length;
+  const failed = results.filter((r) => r.status === "failed");
+  for (const f of failed) log.error(`${f.repo}: ${f.message ?? "failed"}`);
+  if (failed.length) log.error(`${added} added, ${failed.length} failed`);
+  else log.success(`shared ${added} skill(s) to ${dests.length} agent(s).`);
 }
 
 async function addSkillsFromRepo() {
@@ -560,6 +681,7 @@ async function pickOne<T extends string>(
   return raw as T;
 }
 
+// Flat multiselect with a visible "select all" control row (plus the `a` shortcut).
 async function pickMany<T extends string>(
   message: string,
   options: Array<MenuOption<T>>,
@@ -570,13 +692,14 @@ async function pickMany<T extends string>(
     log.info("nothing to choose.");
     return null;
   }
+  const items: PickerItem[] = clean.map((o) => ({ value: o.value, label: o.label, hint: o.hint }));
+  const rows = buildRows(items);
   const initial = initialValues.filter((v) => clean.some((o) => o.value === v));
   while (true) {
-    const raw = await windowedMultiselect({
-      message: `${message} (space toggles, a selects all, enter confirms)`,
-      options: clean,
-      initialValues: initial,
-      cursorAt: initial[0],
+    const raw = await controlMultiselect({
+      message: `${message} (space toggles · a selects all · enter confirms)`,
+      rows,
+      initialValues: initial as string[],
       maxItems: MAX_MENU_ITEMS,
     });
     if (isCancel(raw)) {
@@ -588,24 +711,58 @@ async function pickMany<T extends string>(
   }
 }
 
-async function windowedMultiselect<T extends string>(opts: {
-  message: string;
-  options: Array<MenuOption<T>>;
-  initialValues?: T[];
-  cursorAt?: T;
-  maxItems: number;
-}): Promise<T[] | symbol> {
-  let windowStart = 0;
-  const pageSize = Math.min(opts.options.length, Math.max(opts.maxItems, 5));
+// Grouped multiselect for plugins: a "select all" row plus a per-marketplace toggle
+// row before each group's plugins. Space toggles whichever row the cursor is on.
+async function pickPlugins(message: string, items: PickerItem[]): Promise<string[] | null> {
+  if (items.length === 0) {
+    log.info("nothing to choose.");
+    return null;
+  }
+  const rows = buildRows(items, { grouped: true });
+  while (true) {
+    const raw = await controlMultiselect({
+      message: `${message} (space toggles item/group/all · a all · enter confirms)`,
+      rows,
+      maxItems: MAX_MENU_ITEMS,
+    });
+    if (isCancel(raw)) {
+      stopFlow();
+    }
+    const picked = raw as string[];
+    if (picked.length > 0) return picked;
+    log.warn("Select at least one item, or cancel with Ctrl-C.");
+  }
+}
 
-  return new MultiSelectPrompt<MenuOption<T>>({
-    options: opts.options,
+// A windowed multiselect built on @clack/core's MultiSelectPrompt, extended to render
+// "control" rows (a global select-all, and per-group toggles) alongside item rows.
+// `this.value` only ever holds item values — control rows are never selected, they
+// drive bulk selection. Toggle behavior is delegated to the pure picker-logic helpers.
+async function controlMultiselect(opts: {
+  message: string;
+  rows: PickerRow[];
+  initialValues?: string[];
+  maxItems: number;
+}): Promise<string[] | symbol> {
+  const rows = opts.rows;
+  const grouped = rows.some((r) => r.kind === "group");
+  const totalItems = itemValues(rows).length;
+  let windowStart = 0;
+  const pageSize = Math.min(rows.length, Math.max(opts.maxItems, 5));
+  const options = rows.map((r, i) => ({ value: rowKey(r, i), label: r.kind === "item" ? r.label : r.label }));
+  const firstItemIdx = rows.findIndex((r) => r.kind === "item");
+  const cursorAt = firstItemIdx >= 0 ? options[firstItemIdx]!.value : undefined;
+
+  const prompt = new MultiSelectPrompt<{ value: string; label: string }>({
+    options: options as any,
     initialValues: opts.initialValues,
-    cursorAt: opts.cursorAt,
+    cursorAt,
     render() {
       const heading = `\n${promptState(this.state)}  ${opts.message}`;
-      if (this.state === "submit") return `${heading}\n|  ${selectedSummary(opts.options, this.value as T[])}`;
-      if (this.state === "cancel") return `${heading}\n|  ${selectedSummary(opts.options, this.value as T[])}`;
+      const selected = new Set(this.value as string[]);
+      if (this.state === "submit" || this.state === "cancel") {
+        return `${heading}\n|  ${selected.size} selected`;
+      }
 
       if (this.options.length > pageSize) {
         if (this.cursor >= windowStart + pageSize - 3) {
@@ -615,24 +772,60 @@ async function windowedMultiselect<T extends string>(opts: {
         }
       }
 
-      const selected = new Set(this.value as T[]);
-      const visible = this.options.slice(windowStart, windowStart + pageSize);
-      const hasAbove = this.options.length > pageSize && windowStart > 0;
-      const hasBelow = this.options.length > pageSize && windowStart + pageSize < this.options.length;
+      const visible = rows.slice(windowStart, windowStart + pageSize);
+      const hasAbove = rows.length > pageSize && windowStart > 0;
+      const hasBelow = rows.length > pageSize && windowStart + pageSize < rows.length;
       const linePrefix = this.state === "error" ? "!" : "|";
-      const rows = visible.map((option, index) => {
+      const lines = visible.map((row, index) => {
         const absolute = windowStart + index;
         if (index === 0 && hasAbove) return "...";
         if (index === visible.length - 1 && hasBelow) return "...";
-        return formatMultiOption(option, {
-          active: absolute === this.cursor,
-          selected: selected.has(option.value),
-        });
+        return formatRow(row, { active: absolute === this.cursor, selected, rows, grouped });
       });
       const footer = this.state === "error" ? `\n!  ${this.error}` : "\n`";
-      return `${heading}\n${linePrefix}  ${selected.size}/${this.options.length} selected\n${linePrefix}  ${rows.join(`\n${linePrefix}  `)}${footer}`;
+      return `${heading}\n${linePrefix}  ${selected.size}/${totalItems} selected\n${linePrefix}  ${lines.join(`\n${linePrefix}  `)}${footer}`;
     },
-  }).prompt() as Promise<T[] | symbol>;
+  });
+
+  // Override the toggle behavior: space on a control row performs a bulk toggle; the
+  // base class's listeners (space → toggleValue, `a` → toggleAll) call these methods.
+  (prompt as unknown as { toggleValue: () => void }).toggleValue = function (this: { value: string[]; cursor: number }) {
+    this.value = [...nextSelectionForRow(new Set(this.value), rows, this.cursor)];
+  };
+  (prompt as unknown as { toggleAll: () => void }).toggleAll = function (this: { value: string[] }) {
+    const all = itemValues(rows);
+    this.value = all.every((v) => this.value.includes(v)) ? [] : all;
+  };
+
+  return prompt.prompt() as Promise<string[] | symbol>;
+}
+
+// Option value for a row. Items use their real value (the selection token); control
+// rows use a NUL-prefixed sentinel so they never collide with a real value and never
+// enter the returned selection.
+function rowKey(row: PickerRow, index: number): string {
+  if (row.kind === "item") return row.value;
+  if (row.kind === "all") return "\x00all";
+  return `\x00grp:${index}`;
+}
+
+function formatRow(
+  row: PickerRow,
+  ctx: { active: boolean; selected: Set<string>; rows: PickerRow[]; grouped: boolean },
+): string {
+  const marker = ctx.active ? ">" : " ";
+  if (row.kind === "all") {
+    const box = isAllSelected(ctx.selected, ctx.rows) ? "[x]" : "[ ]";
+    return `${marker} ${box} ${row.label}`;
+  }
+  if (row.kind === "group") {
+    const box = isGroupSelected(ctx.selected, ctx.rows, row.group) ? "[x]" : "[ ]";
+    return `${marker} ${box} ${row.label}`;
+  }
+  const box = ctx.selected.has(row.value) ? "[x]" : "[ ]";
+  const indent = ctx.grouped ? "  " : "";
+  const hint = row.hint ? ` (${row.hint})` : "";
+  return `${marker} ${indent}${box} ${row.label}${hint}`;
 }
 
 function promptState(state: string): string {
@@ -640,24 +833,6 @@ function promptState(state: string): string {
   if (state === "cancel") return "x";
   if (state === "error") return "!";
   return "?";
-}
-
-function formatMultiOption<T extends string>(
-  option: MenuOption<T>,
-  state: { active: boolean; selected: boolean },
-): string {
-  const marker = state.active ? ">" : " ";
-  const box = state.selected ? "[x]" : "[ ]";
-  const hint = option.hint ? ` (${option.hint})` : "";
-  return `${marker} ${box} ${option.label}${hint}`;
-}
-
-function selectedSummary<T extends string>(options: Array<MenuOption<T>>, values: T[]): string {
-  const selected = new Set(values);
-  const labels = options.filter((option) => selected.has(option.value)).map((option) => option.label);
-  if (labels.length === 0) return "none";
-  if (labels.length <= MAX_MENU_ITEMS) return labels.join(", ");
-  return `${labels.length} selected: ${labels.slice(0, MAX_MENU_ITEMS).join(", ")}, ...`;
 }
 
 async function pickAgents(known: AgentId[], message: string, initial?: AgentId[]): Promise<AgentId[] | null> {
@@ -678,18 +853,6 @@ async function confirmYes(message: string): Promise<boolean> {
 function stopFlow(message = "aborted."): never {
   cancel(message);
   throw new FlowCancel(message);
-}
-
-function pluginOptions(plugins: PluginRecord[]): Array<MenuOption<string>> {
-  const groups = new Map<string, PluginRecord[]>();
-  for (const p of plugins) groups.set(p.name, [...(groups.get(p.name) ?? []), p]);
-  return [...groups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, records]) => ({
-      value: name,
-      label: name,
-      hint: records.length > 1 ? `${records.length} installed entries` : records[0]?.marketplace,
-    }));
 }
 
 function pluginTargetAgents(source: AgentId): AgentId[] {
