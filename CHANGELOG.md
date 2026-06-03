@@ -2,6 +2,14 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.13.1] — 2026-06-03
+
+### Fixed
+- **`syncthis update` now updates the copy on your PATH — fixing the stale version after update.** On a machine with more than one Node prefix (e.g. a Homebrew node on PATH while npm's global prefix points at a version-manager prefix), `npm install -g` installed the new version into a prefix you never run from, so the banner stayed frozen at the old version every release. `update` now derives the global prefix from the *running* binary (`import.meta.url`) and pins npm to it with `--prefix`, so the exact copy you execute is the one refreshed. It then re-reads that copy's `package.json` and reports the real result (`updated X → Y` / `now at Y`) instead of a blind "updated to latest" that could mask a stale install. New pure, tested `src/self-update.ts` (`deriveGlobalPrefix`) handles the unix `lib/node_modules` vs Windows `node_modules` layouts and falls back to npm's default in a dev/source run.
+
+### Changed
+- **Plugin-install status lines reflect the network-free local-marketplace path.** The `add plugin` apply note now reads "Codex installs from local marketplace clones (offline); Cursor/skills steps use npx (network)", and the `mirror` provisioning note clarifies that Codex installs from local clones when available, with `npx plugins add` as the fallback — matching the 0.13.0 mechanism instead of overstating npx/network use.
+
 ## [0.13.0] — 2026-06-03
 
 ### Changed

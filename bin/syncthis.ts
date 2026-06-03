@@ -4,6 +4,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { deriveGlobalPrefix } from "../src/self-update.ts";
 import type { AgentId, RowStatus } from "../src/types.ts";
 
 const SELF_PACKAGE = "@hungv47/syncthis";
@@ -225,17 +226,30 @@ async function cmdUpdate(argv: string[]) {
     process.exit(2);
   }
 
-  const command = await resolveSelfUpdateCommand();
+  const running = await runningInstall();
+  const command = await resolveSelfUpdateCommand(running);
   const display = [command.cmd, ...command.args].join(" ");
   if (values["dry-run"]) {
     row("skipped", "update", SELF_PACKAGE, `would run: ${display}`);
+    if (running) console.log(dim(`  target: ${running.packageRoot}`));
     return;
   }
 
-  console.log(`Updating syncthis with ${green(display)}`);
+  const before = running ? await readVersionAt(running.packageRoot) : undefined;
+  console.log(`Updating syncthis with ${green(display)}${running ? dim(`  (target: ${running.packageRoot})`) : ""}`);
   const result = await runInherited(command.cmd, command.args, UPDATE_TIMEOUT_MS);
   if (result.ok) {
-    row("synced", "update", SELF_PACKAGE, "updated to latest");
+    // Verify against the bytes we actually run: re-read the running copy's version
+    // after the install. A blind "updated to latest" was the bug — it reported
+    // success while the on-PATH copy stayed stale because the install landed in a
+    // different prefix. Now we report the version that the next invocation will run.
+    const after = running ? await readVersionAt(running.packageRoot) : undefined;
+    if (after) {
+      const detail = before && before !== after ? `updated ${before} → ${after}` : `now at ${after}`;
+      row("synced", "update", SELF_PACKAGE, detail);
+    } else {
+      row("synced", "update", SELF_PACKAGE, "updated to latest");
+    }
     return;
   }
   const message = result.notFound
@@ -261,12 +275,48 @@ async function readSelfVersion(): Promise<string> {
   }
 }
 
-async function resolveSelfUpdateCommand(): Promise<{ cmd: string; args: string[] }> {
+// The global install (package root + npm prefix) that is ACTUALLY running, found by
+// walking up from the running bundle to the dir whose package.json is ours. Lets
+// `update` refresh the copy on your PATH instead of npm's default global prefix —
+// the two differ on a machine with more than one Node prefix. null in a dev/source
+// run (not inside a node_modules), where `update` falls back to the default.
+async function runningInstall(): Promise<{ packageRoot: string; prefix: string } | null> {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i++) {
+    try {
+      const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { name?: unknown };
+      if (pkg?.name === SELF_PACKAGE) return { packageRoot: dir, prefix: deriveGlobalPrefix(dir) };
+    } catch {
+      // no package.json here / unreadable — keep walking up
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+async function readVersionAt(dir: string): Promise<string | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { version?: unknown };
+    return typeof raw.version === "string" ? raw.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveSelfUpdateCommand(running: { prefix: string } | null): Promise<{ cmd: string; args: string[] }> {
   const userAgent = process.env.npm_config_user_agent ?? "";
   const entry = process.argv[1] ? await realpath(process.argv[1]).catch(() => process.argv[1] ?? "") : "";
   const prefersBun = userAgent.startsWith("bun/") || entry.includes("/.bun/") || entry.includes("\\.bun\\");
+  // bun's global install always targets ~/.bun (or $BUN_INSTALL), which is also where
+  // a bun-installed binary runs from, so no prefix override is needed there.
   if (prefersBun) return { cmd: "bun", args: ["install", "-g", `${SELF_PACKAGE}@latest`] };
-  return { cmd: "npm", args: ["install", "-g", `${SELF_PACKAGE}@latest`] };
+  const args = ["install", "-g", `${SELF_PACKAGE}@latest`];
+  // Pin npm to the prefix that owns the running binary so the copy on your PATH is
+  // the one updated — not npm's default global prefix, which may point elsewhere.
+  if (running?.prefix) args.push("--prefix", running.prefix);
+  return { cmd: "npm", args };
 }
 
 function runInherited(
@@ -337,7 +387,7 @@ async function cmdMirror(argv: string[]) {
   if (provision) {
     console.log(
       dim(
-        "provisioning on: missing marketplaces are registered via `npx plugins add`, and bundles a target can't load as plugins are added as skills via `npx skills add` (network). Pass --no-provision to skip.",
+        "provisioning on: Codex installs from local marketplace clones when available, else registers the marketplace via `npx plugins add`; bundles a target can't load as plugins are added as skills via `npx skills add` (network). Pass --no-provision to skip.",
       ),
     );
   }
@@ -763,7 +813,7 @@ async function cmdAddPlugin(argv: string[]) {
     console.log(dim("dry-run — no changes applied."));
     return;
   }
-  console.log(dim("installing — may register Codex marketplaces and run npx (network)…"));
+  console.log(dim("installing — Codex installs from local marketplace clones (offline); Cursor/skills steps use npx (network)…"));
   const onProgress = (label: string, i: number, total: number) =>
     process.stderr.write(dim(`  → [${i}/${total}] ${label}\n`));
   const applied = await runPluginAdd({ plugins: positionals, agents, apply: true, onProgress });
