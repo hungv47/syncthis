@@ -17,6 +17,7 @@ const STDIO: McpServer = {
   env: { GITHUB_TOKEN: "x" },
 };
 const HTTP: McpServer = { type: "http", url: "https://mcp.linear.app/sse" };
+const BIGQUERY: McpServer = { type: "http", url: "https://bigquery.googleapis.com/mcp" };
 
 let workDir: string;
 let originalHome: string | undefined;
@@ -260,6 +261,28 @@ describe("runSync (cross-pollinate)", () => {
 
     const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
     expect(claude.projects["/repo"].trustLevel).toBe("trusted");
+  });
+
+  test("sync writes the BigQuery remote to OpenCode disabled", async () => {
+    await writeAgentJson(".cursor/mcp.json", { bigquery: BIGQUERY });
+    const report = await runSync({ skipSkills: true });
+    expect(report.conflicts).toEqual([]);
+    const opencodeWrite = report.writes.find((w) => w.agent === "opencode")!;
+    expect(opencodeWrite.compatibility).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        server: "bigquery",
+        code: "opencode-bigquery-output-schema-formats",
+        action: "disabled",
+      }),
+    ]);
+
+    const opencode = JSON.parse(await Bun.file(join(workDir, ".config", "opencode", "opencode.json")).text());
+    expect(opencode.mcp.bigquery).toMatchObject({
+      type: "remote",
+      url: BIGQUERY.url,
+      enabled: false,
+    });
   });
 
   test("preserves conflict — leaves each agent's own version untouched", async () => {
@@ -518,6 +541,23 @@ describe("runDoctor", () => {
     const r = await runDoctor();
     expect(r.conflicts).toHaveLength(1);
     expect(r.conflicts[0]!.name).toBe("dup");
+  });
+
+  test("reports adapter compatibility issues", async () => {
+    const path = join(workDir, ".config", "opencode", "opencode.json");
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(path, JSON.stringify({ mcp: { bigquery: { type: "remote", url: BIGQUERY.url, enabled: true } } }));
+
+    const r = await runDoctor();
+    const opencode = r.reads.find((read) => read.agent === "opencode")!;
+    expect(opencode.compatibility).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        server: "bigquery",
+        code: "opencode-bigquery-output-schema-formats",
+        action: "disabled",
+      }),
+    ]);
   });
 
   test("reports unmanaged MCP files with configured servers", async () => {

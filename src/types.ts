@@ -35,12 +35,21 @@ export type SyncStatus = "synced" | "unchanged" | "skipped" | "failed";
 export type DoctorStatus = "ok" | "drift" | "missing" | "invalid";
 export type RowStatus = SyncStatus | DoctorStatus;
 
+export type AdapterCompatibilityIssue = {
+  agent: AgentId;
+  server: string;
+  code: string;
+  action: "disabled";
+  reason: string;
+};
+
 export type AdapterRead = {
   agent: AgentId;
   path: string;
   servers: Record<string, McpServer>;
   exists: boolean;
   error?: string;
+  compatibility?: AdapterCompatibilityIssue[];
 };
 
 export type AdapterWriteResult = {
@@ -48,6 +57,7 @@ export type AdapterWriteResult = {
   path: string;
   status: SyncStatus;
   message?: string;
+  compatibility?: AdapterCompatibilityIssue[];
 };
 
 export interface Adapter {
