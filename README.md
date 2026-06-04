@@ -145,6 +145,10 @@ syncthis writes to files that hold your whole agent config — often with API ke
 - **Backed up on first write.** Each target file is copied to `<file>.syncthis.bak` the first time syncthis touches it, so the original is always recoverable.
 - **Atomic + `0600`.** Writes go to a temp file and are atomically renamed into place (a crash can't truncate your config), clamped to owner-only `0600` since they can carry secrets.
 - **Idempotent.** Re-running converges — including SSE/HTTP servers — instead of churning or raising phantom conflicts.
+- **Agent compatibility is explicit.** If a target agent can't safely load a synced server,
+  syncthis keeps the server in that agent's config but writes the safe agent-specific
+  state and reports a compatibility adjustment. Example: opencode remotes that would
+  corrupt its TUI with schema warnings are written as `enabled: false`.
 - **Preview anything** with `--dry-run`; destructive commands refuse to run unattended without `--yes`.
 
 ## Directional sync

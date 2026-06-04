@@ -1088,6 +1088,14 @@ function row(status: RowStatus, label: string, path: string, message?: string) {
   console.log(`  ${GLYPHS[status]} ${label.padEnd(14)} ${detail}`);
 }
 
+function printCompatibilityIssues(issues: import("../src/types.ts").AdapterCompatibilityIssue[]) {
+  if (issues.length === 0) return;
+  console.log(yellow(`\ncompatibility adjustments:`));
+  for (const issue of issues) {
+    console.log(`  ${yellow("~")} ${issue.agent.padEnd(14)} ${issue.server} ${dim(`${issue.action}: ${issue.reason}`)}`);
+  }
+}
+
 function printSync(r: import("../src/sync.ts").SyncReport) {
   const totalNames = new Set<string>();
   for (const read of r.reads) for (const n of Object.keys(read.servers)) totalNames.add(n);
@@ -1099,6 +1107,7 @@ function printSync(r: import("../src/sync.ts").SyncReport) {
   );
 
   for (const w of r.writes) row(w.status, w.agent, w.path, w.message);
+  printCompatibilityIssues(r.writes.flatMap((w) => w.compatibility ?? []));
 
   if (r.conflicts.length) {
     console.log(yellow(`\n${r.conflicts.length} conflict(s) — left each agent's own copy untouched:`));
@@ -1137,6 +1146,8 @@ function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
       console.log(`  ${tag} ${c.name}${detail}`);
     }
   }
+
+  printCompatibilityIssues(r.reads.flatMap((read) => read.compatibility ?? []));
 
   if (r.conflicts.length) {
     console.log(yellow(`\n${r.conflicts.length} conflict(s):`));

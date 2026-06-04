@@ -19,6 +19,7 @@ const STDIO: McpServer = {
   env: { GITHUB_TOKEN: "x" },
 };
 const HTTP: McpServer = { type: "http", url: "https://mcp.linear.app/sse", headers: { Authorization: "Bearer x" } };
+const BIGQUERY: McpServer = { type: "http", url: "https://bigquery.googleapis.com/mcp" };
 
 let workDir: string;
 let originalHome: string | undefined;
@@ -196,6 +197,57 @@ describe("opencode adapter", () => {
     expect(data.mcp.lin.oauth).toBe(true);
     expect(data.mcp.lin.enabled).toBe(true);
     expect(data.mcp.lin.url).toBe(HTTP.url);
+  });
+
+  test("disables BigQuery remote because OpenCode cannot load its output schemas quietly", async () => {
+    const result = await opencodeAdapter.write({ bigquery: BIGQUERY }, { dryRun: false });
+    expect(result.compatibility).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        server: "bigquery",
+        code: "opencode-bigquery-output-schema-formats",
+        action: "disabled",
+      }),
+    ]);
+    expect(result.message).toContain("BigQuery output schemas");
+    const data = JSON.parse(await Bun.file(opencodeAdapter.targetPath()).text());
+    expect(data.mcp.bigquery).toMatchObject({
+      type: "remote",
+      url: BIGQUERY.url,
+      enabled: false,
+    });
+    expect(await roundTrip(opencodeAdapter, BIGQUERY, "bigquery")).toEqual(BIGQUERY);
+  });
+
+  test("reports enabled incompatible OpenCode remotes on read", async () => {
+    const path = opencodeAdapter.targetPath();
+    await mkdir(join(path, ".."), { recursive: true });
+    await Bun.write(path, JSON.stringify({ mcp: { bigquery: { type: "remote", url: BIGQUERY.url, enabled: true } } }));
+    const read = await opencodeAdapter.read();
+    expect(read.compatibility).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        server: "bigquery",
+        code: "opencode-bigquery-output-schema-formats",
+      }),
+    ]);
+  });
+
+  test("disables invalid remote URLs instead of letting OpenCode warn on startup", async () => {
+    const invalid: McpServer = { type: "http", url: "" };
+    const result = await opencodeAdapter.write({ databricks: invalid }, { dryRun: false });
+    expect(result.compatibility?.[0]).toMatchObject({
+      agent: "opencode",
+      server: "databricks",
+      code: "opencode-invalid-remote-url",
+      action: "disabled",
+    });
+    const data = JSON.parse(await Bun.file(opencodeAdapter.targetPath()).text());
+    expect(data.mcp.databricks).toMatchObject({
+      type: "remote",
+      url: "",
+      enabled: false,
+    });
   });
 });
 
