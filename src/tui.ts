@@ -34,6 +34,7 @@ import {
   type PickerItem,
   type PickerRow,
 } from "./picker-logic.ts";
+import { S, c } from "./tui-style.ts";
 import type { AgentId } from "./types.ts";
 import type { PluginRecord } from "./plugins/types.ts";
 
@@ -49,7 +50,7 @@ export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
 
   note(
-    "Pick what to manage. Each flow: source → items (space toggles, a selects all) → destinations → preview → confirm.",
+    "Pick what to manage. Each flow: source → items (space toggles, type to filter) → destinations → preview → confirm.",
     "what is this?",
   );
 
@@ -697,7 +698,7 @@ async function pickMany<T extends string>(
   const initial = initialValues.filter((v) => clean.some((o) => o.value === v));
   while (true) {
     const raw = await controlMultiselect({
-      message: `${message} (space toggles · a selects all · enter confirms)`,
+      message,
       rows,
       initialValues: initial as string[],
       maxItems: MAX_MENU_ITEMS,
@@ -721,7 +722,7 @@ async function pickPlugins(message: string, items: PickerItem[]): Promise<string
   const rows = buildRows(items, { grouped: true });
   while (true) {
     const raw = await controlMultiselect({
-      message: `${message} (space toggles item/group/all · a all · enter confirms)`,
+      message,
       rows,
       maxItems: MAX_MENU_ITEMS,
     });
@@ -735,67 +736,144 @@ async function pickPlugins(message: string, items: PickerItem[]): Promise<string
 }
 
 // A windowed multiselect built on @clack/core's MultiSelectPrompt, extended to render
-// "control" rows (a global select-all, and per-group toggles) alongside item rows.
-// `this.value` only ever holds item values — control rows are never selected, they
-// drive bulk selection. Toggle behavior is delegated to the pure picker-logic helpers.
+// "control" rows (a global select-all, and per-group toggles) alongside item rows, plus
+// type-to-filter on long lists. Styling matches the native clack prompts (see tui-style).
+// `this.value` only ever holds item values — control rows are never selected, they drive
+// bulk selection. Toggle behavior is delegated to the pure picker-logic helpers, run
+// against the CURRENT view (so "select all" while filtered toggles only the matches).
 async function controlMultiselect(opts: {
   message: string;
   rows: PickerRow[];
   initialValues?: string[];
   maxItems: number;
 }): Promise<string[] | symbol> {
-  const rows = opts.rows;
-  const grouped = rows.some((r) => r.kind === "group");
-  const totalItems = itemValues(rows).length;
+  const fullRows = opts.rows;
+  const grouped = fullRows.some((r) => r.kind === "group");
+  const totalItems = itemValues(fullRows).length;
+  // Only advertise/enable filtering once a list is long enough to be a scrolling chore.
+  const filterable = totalItems > opts.maxItems;
+  const termRows = typeof process.stdout.rows === "number" ? process.stdout.rows : 24;
+  const pageSize = Math.max(5, Math.min(Math.max(opts.maxItems, termRows - 8), 24, fullRows.length));
+
+  let filter = "";
+  let view: PickerRow[] = fullRows;
   let windowStart = 0;
-  const pageSize = Math.min(rows.length, Math.max(opts.maxItems, 5));
-  const options = rows.map((r, i) => ({ value: rowKey(r, i), label: r.kind === "item" ? r.label : r.label }));
-  const firstItemIdx = rows.findIndex((r) => r.kind === "item");
-  const cursorAt = firstItemIdx >= 0 ? options[firstItemIdx]!.value : undefined;
+
+  // Rows to display for the current filter. Empty filter → the full structure (select-all
+  // + group toggles + items). Non-empty → only matching item rows, with a synthetic
+  // "select all (N matches)" so bulk-selecting a search result stays one keypress.
+  const computeView = (): PickerRow[] => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return fullRows;
+    const matches = fullRows.filter(
+      (r): r is Extract<PickerRow, { kind: "item" }> =>
+        r.kind === "item" && (r.label.toLowerCase().includes(f) || r.value.toLowerCase().includes(f)),
+    );
+    if (matches.length > 1) {
+      return [{ kind: "all", label: `select all (${matches.length} matches)` }, ...matches];
+    }
+    return matches;
+  };
+
+  const firstItemIdx = fullRows.findIndex((r) => r.kind === "item");
+  const cursorAt = firstItemIdx >= 0 ? rowKey(fullRows[firstItemIdx]!, firstItemIdx) : undefined;
 
   const prompt = new MultiSelectPrompt<{ value: string; label: string }>({
-    options: options as any,
+    options: fullRows.map((r, i) => ({ value: rowKey(r, i), label: r.label })) as any,
     initialValues: opts.initialValues,
     cursorAt,
     render() {
-      const heading = `\n${promptState(this.state)}  ${opts.message}`;
+      const head = `${c.gray(S.bar)}\n${stepSymbol(this.state)}  ${opts.message}`;
       const selected = new Set(this.value as string[]);
       if (this.state === "submit" || this.state === "cancel") {
-        return `${heading}\n|  ${selected.size} selected`;
+        return `${head}\n${c.gray(S.bar)}  ${c.dim(`${selected.size} selected`)}`;
       }
 
-      if (this.options.length > pageSize) {
+      if (view.length > pageSize) {
         if (this.cursor >= windowStart + pageSize - 3) {
-          windowStart = Math.max(Math.min(this.cursor - pageSize + 3, this.options.length - pageSize), 0);
+          windowStart = Math.max(Math.min(this.cursor - pageSize + 3, view.length - pageSize), 0);
         } else if (this.cursor < windowStart + 2) {
           windowStart = Math.max(this.cursor - 2, 0);
         }
+      } else {
+        windowStart = 0;
       }
 
-      const visible = rows.slice(windowStart, windowStart + pageSize);
-      const hasAbove = rows.length > pageSize && windowStart > 0;
-      const hasBelow = rows.length > pageSize && windowStart + pageSize < rows.length;
-      const linePrefix = this.state === "error" ? "!" : "|";
-      const lines = visible.map((row, index) => {
-        const absolute = windowStart + index;
-        if (index === 0 && hasAbove) return "...";
-        if (index === visible.length - 1 && hasBelow) return "...";
-        return formatRow(row, { active: absolute === this.cursor, selected, rows, grouped });
-      });
-      const footer = this.state === "error" ? `\n!  ${this.error}` : "\n`";
-      return `${heading}\n${linePrefix}  ${selected.size}/${totalItems} selected\n${linePrefix}  ${lines.join(`\n${linePrefix}  `)}${footer}`;
+      const above = windowStart;
+      const below = Math.max(view.length - windowStart - pageSize, 0);
+      const slice = view.slice(windowStart, windowStart + pageSize);
+
+      const lines: string[] = [];
+      const controls = filterable ? "type to filter · space toggles · enter confirms" : "space toggles · enter confirms";
+      lines.push(c.dim(`${selected.size}/${totalItems} selected · ${controls}`));
+      if (filter) lines.push(`${c.cyan("filter")} ${filter}${c.inverse(" ")}`);
+      if (view.length === 0) lines.push(c.dim("no matches"));
+      if (above > 0) lines.push(c.dim(`${S.up} ${above} more`));
+      for (let i = 0; i < slice.length; i++) {
+        const absolute = windowStart + i;
+        lines.push(formatRow(slice[i]!, { active: absolute === this.cursor, selected, rows: view, grouped }));
+      }
+      if (below > 0) lines.push(c.dim(`${S.down} ${below} more`));
+
+      const bar = this.state === "error" ? c.yellow(S.bar) : c.gray(S.bar);
+      const body = lines.map((l) => `${bar}  ${l}`).join("\n");
+      const end = this.state === "error" ? `${c.yellow(S.barEnd)}  ${c.yellow(this.error)}` : c.gray(S.barEnd);
+      return `${head}\n${body}\n${end}`;
     },
   });
 
-  // Override the toggle behavior: space on a control row performs a bulk toggle; the
-  // base class's listeners (space → toggleValue, `a` → toggleAll) call these methods.
-  (prompt as unknown as { toggleValue: () => void }).toggleValue = function (this: { value: string[]; cursor: number }) {
-    this.value = [...nextSelectionForRow(new Set(this.value), rows, this.cursor)];
+  const p = prompt as unknown as {
+    options: Array<{ value: string; label: string }>;
+    cursor: number;
+    value: string[];
+    state: string;
+    input: { on: (event: string, listener: (...args: any[]) => void) => void };
+    render: () => void;
+    toggleValue: () => void;
+    toggleAll: () => void;
   };
-  (prompt as unknown as { toggleAll: () => void }).toggleAll = function (this: { value: string[] }) {
-    const all = itemValues(rows);
-    this.value = all.every((v) => this.value.includes(v)) ? [] : all;
+
+  // Recompute the view after a filter change and keep clack's cursor nav in range: its
+  // built-in handlers wrap on `this.options.length`, so options must mirror the view.
+  const refreshView = () => {
+    view = computeView();
+    p.options = view.map((r, i) => ({ value: rowKey(r, i), label: r.label }));
+    const firstItem = view.findIndex((r) => r.kind === "item");
+    p.cursor = firstItem >= 0 ? firstItem : 0;
+    windowStart = 0;
   };
+
+  // Space toggles whichever row the cursor is on, against the current view. `a` is no
+  // longer a select-all shortcut (freed for typing) — the visible select-all row is the
+  // discoverable mechanism, so toggleAll is neutralized.
+  p.toggleValue = function () {
+    this.value = [...nextSelectionForRow(new Set(this.value), view, this.cursor)];
+  };
+  p.toggleAll = function () {};
+
+  // Type-to-filter. Handled off the raw keypress object (not clack's lowercased `key`
+  // event) so backspace/delete are reliable. Nav/space/enter keep their meaning.
+  if (filterable) {
+    p.input.on("keypress", (ch: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+      if (p.state !== "active" && p.state !== "initial") return;
+      if (key?.ctrl || key?.meta) return;
+      const name = key?.name;
+      if (name === "backspace" || name === "delete") {
+        if (filter) {
+          filter = filter.slice(0, -1);
+          refreshView();
+          p.render();
+        }
+        return;
+      }
+      if (name && ["space", "return", "enter", "up", "down", "left", "right", "tab", "escape"].includes(name)) return;
+      if (typeof ch === "string" && ch.length === 1 && ch >= " " && ch <= "~") {
+        filter += ch.toLowerCase();
+        refreshView();
+        p.render();
+      }
+    });
+  }
 
   return prompt.prompt() as Promise<string[] | symbol>;
 }
@@ -809,30 +887,36 @@ function rowKey(row: PickerRow, index: number): string {
   return `\x00grp:${index}`;
 }
 
+// One row, styled to match clack: cyan pointer + cyan box on the active row, green box
+// when selected, dim otherwise. Group rows carry a glyph + bold label so the marketplace
+// hierarchy reads at a glance against its indented, dimmed children.
 function formatRow(
   row: PickerRow,
   ctx: { active: boolean; selected: Set<string>; rows: PickerRow[]; grouped: boolean },
 ): string {
-  const marker = ctx.active ? ">" : " ";
+  const pointer = ctx.active ? c.cyan(S.pointer) : " ";
+  const checkbox = (on: boolean) => (on ? c.green(S.checkboxOn) : ctx.active ? c.cyan(S.checkboxOff) : c.dim(S.checkboxOff));
+
   if (row.kind === "all") {
-    const box = isAllSelected(ctx.selected, ctx.rows) ? "[x]" : "[ ]";
-    return `${marker} ${box} ${row.label}`;
+    const label = ctx.active ? c.cyan(row.label) : c.bold(row.label);
+    return `${pointer} ${checkbox(isAllSelected(ctx.selected, ctx.rows))} ${label}`;
   }
   if (row.kind === "group") {
-    const box = isGroupSelected(ctx.selected, ctx.rows, row.group) ? "[x]" : "[ ]";
-    return `${marker} ${box} ${row.label}`;
+    const label = ctx.active ? c.cyan(c.bold(row.label)) : c.bold(row.label);
+    return `${pointer} ${c.yellow(S.group)} ${checkbox(isGroupSelected(ctx.selected, ctx.rows, row.group))} ${label}`;
   }
-  const box = ctx.selected.has(row.value) ? "[x]" : "[ ]";
+  const on = ctx.selected.has(row.value);
   const indent = ctx.grouped ? "  " : "";
-  const hint = row.hint ? ` (${row.hint})` : "";
-  return `${marker} ${indent}${box} ${row.label}${hint}`;
+  const text = `${row.label}${row.hint ? ` (${row.hint})` : ""}`;
+  const label = ctx.active ? c.cyan(text) : on ? text : c.dim(text);
+  return `${pointer} ${indent}${checkbox(on)} ${label}`;
 }
 
-function promptState(state: string): string {
-  if (state === "submit") return "o";
-  if (state === "cancel") return "x";
-  if (state === "error") return "!";
-  return "?";
+function stepSymbol(state: string): string {
+  if (state === "submit") return c.green(S.submit);
+  if (state === "cancel") return c.red(S.cancel);
+  if (state === "error") return c.yellow(S.error);
+  return c.cyan(S.active);
 }
 
 async function pickAgents(known: AgentId[], message: string, initial?: AgentId[]): Promise<AgentId[] | null> {
