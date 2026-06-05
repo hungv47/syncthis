@@ -752,8 +752,10 @@ async function controlMultiselect(opts: {
   const totalItems = itemValues(fullRows).length;
   // Only advertise/enable filtering once a list is long enough to be a scrolling chore.
   const filterable = totalItems > opts.maxItems;
+  // Window height tracks the terminal (≈8 chrome lines), floored at 5 and capped at 24,
+  // never exceeding the row count — so it grows on tall terminals and shrinks on short ones.
   const termRows = typeof process.stdout.rows === "number" ? process.stdout.rows : 24;
-  const pageSize = Math.max(5, Math.min(Math.max(opts.maxItems, termRows - 8), 24, fullRows.length));
+  const pageSize = Math.max(5, Math.min(termRows - 8, 24, fullRows.length));
 
   let filter = "";
   let view: PickerRow[] = fullRows;
@@ -811,7 +813,8 @@ async function controlMultiselect(opts: {
       if (above > 0) lines.push(c.dim(`${S.up} ${above} more`));
       for (let i = 0; i < slice.length; i++) {
         const absolute = windowStart + i;
-        lines.push(formatRow(slice[i]!, { active: absolute === this.cursor, selected, rows: view, grouped }));
+        // While filtering, matches are flat (no group headers) — drop the group indent.
+        lines.push(formatRow(slice[i]!, { active: absolute === this.cursor, selected, rows: view, grouped: filter ? false : grouped }));
       }
       if (below > 0) lines.push(c.dim(`${S.down} ${below} more`));
 
@@ -827,7 +830,10 @@ async function controlMultiselect(opts: {
     cursor: number;
     value: string[];
     state: string;
-    input: { on: (event: string, listener: (...args: any[]) => void) => void };
+    input: {
+      on: (event: string, listener: (...args: any[]) => void) => void;
+      removeListener: (event: string, listener: (...args: any[]) => void) => void;
+    };
     render: () => void;
     toggleValue: () => void;
     toggleAll: () => void;
@@ -853,29 +859,34 @@ async function controlMultiselect(opts: {
 
   // Type-to-filter. Handled off the raw keypress object (not clack's lowercased `key`
   // event) so backspace/delete are reliable. Nav/space/enter keep their meaning.
-  if (filterable) {
-    p.input.on("keypress", (ch: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
-      if (p.state !== "active" && p.state !== "initial") return;
-      if (key?.ctrl || key?.meta) return;
-      const name = key?.name;
-      if (name === "backspace" || name === "delete") {
-        if (filter) {
-          filter = filter.slice(0, -1);
-          refreshView();
-          p.render();
-        }
-        return;
-      }
-      if (name && ["space", "return", "enter", "up", "down", "left", "right", "tab", "escape"].includes(name)) return;
-      if (typeof ch === "string" && ch.length === 1 && ch >= " " && ch <= "~") {
-        filter += ch.toLowerCase();
+  const onFilterKey = (ch: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+    if (p.state !== "active" && p.state !== "initial") return;
+    if (key?.ctrl || key?.meta) return;
+    const name = key?.name;
+    if (name === "backspace" || name === "delete") {
+      if (filter) {
+        filter = filter.slice(0, -1);
         refreshView();
         p.render();
       }
-    });
-  }
+      return;
+    }
+    if (name && ["space", "return", "enter", "up", "down", "left", "right", "tab", "escape"].includes(name)) return;
+    if (typeof ch === "string" && ch.length === 1 && ch >= " " && ch <= "~") {
+      filter += ch.toLowerCase();
+      refreshView();
+      p.render();
+    }
+  };
 
-  return prompt.prompt() as Promise<string[] | symbol>;
+  // p.input is the shared process.stdin and clack's close() only removes its own
+  // listener — so we must remove ours, or it leaks across every prompt in the session.
+  if (filterable) p.input.on("keypress", onFilterKey);
+  try {
+    return (await prompt.prompt()) as string[] | symbol;
+  } finally {
+    if (filterable) p.input.removeListener("keypress", onFilterKey);
+  }
 }
 
 // Option value for a row. Items use their real value (the selection token); control
