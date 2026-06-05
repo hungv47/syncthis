@@ -2,6 +2,14 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.14.0] — 2026-06-05
+
+### Changed
+- **Interactive multiselect picker restyled to match the native prompts.** The grouped/flat checkbox picker (plugins, skills, agents, MCP servers) hand-rolled its render with ASCII pipes, a stray backtick footer, and no color, so long lists looked broken next to the clack `select()` menus. It now renders with the same treatment as those menus — gray `│` bars, a `└` end-cap, a colored `◆`/`◇` state glyph, `◻`/`◼` checkboxes, and a cyan-highlighted active row — via a new dependency-free `src/tui-style.ts` that re-derives clack's Unicode/ASCII fallback and `NO_COLOR`/non-TTY-aware color (zero added runtime deps). Marketplace group rows now carry a `◈` glyph + bold label over dimmed, indented children, the window height adapts to the terminal, and the row-eating `...` truncation is replaced by dim `↑ N more` / `↓ N more` counters.
+
+### Added
+- **Type-to-filter in the multiselect picker.** On lists longer than one page (e.g. the 200+ plugin catalog), just start typing to incrementally filter — matches collapse to the typed substring with a synthetic `select all (N matches)` row, backspace narrows back, and clearing the filter restores the full grouped structure. Selections persist across filter changes. The previous hidden `a`-selects-all shortcut is retired (the key is now free for typing); the visible `select all` row remains the discoverable bulk-select mechanism.
+
 ## [0.13.1] — 2026-06-03
 
 ### Fixed
