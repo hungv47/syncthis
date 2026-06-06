@@ -199,7 +199,7 @@ Plugins aren't config records like MCP servers — they're installed artifact bu
 
 - **Codex** consumes plugins natively (`codex plugin add`). syncthis installs each missing plugin and, by default, registers any marketplace Codex lacks first.
 - **Cursor** has no list CLI, so it's a **write-only** target: pushed by source repo (`npx plugins add <repo> --target cursor`), additive, from a Claude primary only.
-- **The other 8 agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`, **and** the plugins' bundled **MCP servers**, decomposed and lifted into each agent's own MCP config (additive; `${CLAUDE_PLUGIN_ROOT}` resolved to the install dir; a name already present with a different config is left untouched). The plugin cohort already gets those servers by installing the plugin.
+- **The non-plugin agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`, **and** the plugins' bundled **MCP servers**, decomposed and lifted into each agent's own MCP config (additive; `${CLAUDE_PLUGIN_ROOT}` resolved to the install dir; a name already present with a different config is left untouched). The plugin cohort already gets those servers by installing the plugin; Pi is skills-only, so it receives skills but no MCP lift.
 
 ```bash
 # See what's installed where (read-only): native plugins on Claude/Codex,

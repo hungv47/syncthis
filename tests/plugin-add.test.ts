@@ -121,7 +121,7 @@ describe("runPluginAdd", () => {
     await setup();
     const r = await runPluginAdd({ plugins: ["foo"], agents: ["codex", "cursor", "opencode"], apply: false });
     expect(r.sourceError).toBeUndefined();
-    expect(r.installs.some((i) => i.agent === "codex" && i.target === "foo")).toBe(true);
+    expect(r.installs.some((i) => i.agent === "codex" && i.target === "foo@plugins-cli")).toBe(true);
     expect(r.cursor?.repos).toEqual(["owner/foo"]);
     expect(r.skills.map((s) => s.repo)).toContain("owner/foo");
     expect(r.mcp.find((m) => m.agent === "opencode")?.added).toContain("srv");
@@ -157,6 +157,20 @@ describe("runPluginAdd", () => {
     await setup({ listExit: 1 });
     const r = await runPluginAdd({ plugins: ["foo"], agents: ["codex"], apply: false });
     expect(r.sourceError).toBeTruthy();
+    expect(pluginAddHasWork(r)).toBe(false);
+  });
+
+  test("preview treats Codex's sanitized github-com name as already present", async () => {
+    await writePluginWithMcp(join(workDir, "plugins", "gh"), "srv");
+    await installFakeClaude(
+      JSON.stringify([{ id: "github.com-owner-tool@mkt", enabled: true, installPath: join(workDir, "plugins", "gh") }]),
+      JSON.stringify([{ name: "mkt", source: "github", repo: "owner/tool" }]),
+    );
+    await installFakeCodex(codexTable([["github-com-owner-tool@plugins-cli", "installed, enabled", "1.0.0", "/c/gh"]]));
+    await installFakeNpx();
+
+    const r = await runPluginAdd({ plugins: ["github.com-owner-tool"], agents: ["codex"], apply: false });
+    expect(r.installs).toEqual([{ agent: "codex", target: "github-com-owner-tool@plugins-cli", status: "present" }]);
     expect(pluginAddHasWork(r)).toBe(false);
   });
 });

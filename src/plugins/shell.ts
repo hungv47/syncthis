@@ -83,6 +83,23 @@ export function parsePluginId(id: string): { name: string; marketplace?: string 
   return { name: id.slice(0, at), marketplace: id.slice(at + 1) };
 }
 
+// Some plugin installers sanitize URL-derived Claude ids before storing them on a
+// target. Example: Claude can report `github.com-openclaw-agent-skills`, while
+// Codex stores the same repo as `github-com-openclaw-agent-skills`. Treat those as
+// the same plugin for cross-agent diff/coverage decisions, but keep each agent's
+// own stored name for the actual install/uninstall command.
+export function pluginIdentityKeys(name: string): string[] {
+  const keys = new Set([name]);
+  if (name.startsWith("github.com-")) keys.add(name.replace(/\./g, "-"));
+  if (name.startsWith("github-com-")) keys.add(name.replace(/^github-com-/, "github.com-"));
+  return [...keys];
+}
+
+export function pluginNamesOverlap(a: string, b: string): boolean {
+  const bKeys = new Set(pluginIdentityKeys(b));
+  return pluginIdentityKeys(a).some((k) => bKeys.has(k));
+}
+
 // Plugin / marketplace names that flow into a CLI invocation must be flat
 // identifiers — no path separators, no traversal, no NUL.
 export function isSafeIdentifier(name: string): boolean {

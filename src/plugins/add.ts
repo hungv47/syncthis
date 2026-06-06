@@ -105,7 +105,15 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   if (!opts.apply) {
     // Preview: resolve what WOULD happen without shelling out.
     if (wantCodex) {
-      for (const p of chosen) base.installs.push({ agent: "codex", target: p.name, status: "installed", message: "would install" });
+      const codex = pluginAdapters.find((a) => a.id === "codex")!;
+      for (const p of chosen) {
+        base.installs.push(await codex.installPlugin(p.name, {
+          dryRun: true,
+          provision,
+          sourceRepo: repoOf(p),
+          sourceClonePath: cloneOf(p),
+        }));
+      }
     }
     if (wantCursor) base.cursor = { repos: chosenRepos, results: [] };
     if (scopedSkillCohort.length && chosenRepos.length) {
@@ -220,5 +228,11 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
 export function pluginAddHasWork(report: PluginAddReport): boolean {
   if (report.sourceError) return false;
   const resolvable = report.plugins.length - report.notFound.length;
-  return resolvable > 0 && report.requestedAgents.some((a) => a !== "claude-code");
+  if (resolvable <= 0) return false;
+  return (
+    report.installs.some((i) => i.status === "installed" || i.status === "failed" || !!i.skillsFallbackRepo) ||
+    (report.cursor?.repos.length ?? 0) > 0 ||
+    report.skills.some((s) => s.status === "added" || s.status === "failed") ||
+    report.mcp.some((m) => m.added.length > 0 || m.status === "failed")
+  );
 }

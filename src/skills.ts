@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { adapters } from "./adapters/index.ts";
 import { expandHome, readJson } from "./io.ts";
-import { isSafeRepoSlug, isSafeSkillName, run } from "./plugins/shell.ts";
+import { isSafeRepoSlug, isSafeSkillName, pluginNamesOverlap, run } from "./plugins/shell.ts";
 import type { AgentId } from "./types.ts";
 
 // Agents that consume the open-plugin bundle natively — Claude (`claude plugin`),
@@ -37,6 +38,7 @@ export function skillCohort(): AgentId[] {
 
 const CLAUDE_MARKETPLACES = "~/.claude/plugins/known_marketplaces.json";
 const SKILLS_ADD_TIMEOUT_MS = 180_000;
+const SKILLS_LIST_TIMEOUT_MS = 60_000;
 
 type KnownMarketplaces = Record<
   string,
@@ -136,7 +138,7 @@ export async function resolveInstalledRepoCoverage(installedNames: Set<string>):
     if (!repo || entry?.source?.source !== "github" || !installLocation) return null;
     if (!isSafeRepoSlug(repo)) return null;
     const names = await marketplacePluginNames(installLocation);
-    return names.some((n) => installedNames.has(n)) ? repo : null;
+    return names.some((n) => [...installedNames].some((installed) => pluginNamesOverlap(installed, n))) ? repo : null;
   }));
   for (const repo of candidates) {
     if (repo) covered.add(repo);
@@ -175,6 +177,7 @@ const SKILL_AGENT_LABELS: Record<string, AgentId> = {
   "gemini cli": "gemini-cli",
   gemini: "gemini-cli",
   "kimi cli": "kimi-cli",
+  "kimi code cli": "kimi-cli",
   kimi: "kimi-cli",
   antigravity: "antigravity",
   "github copilot": "github-copilot",
@@ -192,19 +195,65 @@ export function skillAgentLabelToId(label: string): AgentId | undefined {
   return SKILL_AGENT_LABELS[label.trim().toLowerCase()];
 }
 
+const SKILL_AGENT_CLI_IDS: Partial<Record<AgentId, string>> = {
+  // Syncthis' MCP adapter id is `kimi-cli`, but vercel-labs/skills names the
+  // same target `kimi-code-cli`. Passing `kimi-cli` makes the upstream CLI reject
+  // the whole multi-agent add/remove invocation, so translate only at the process
+  // boundary and keep syncthis' public agent id stable.
+  "kimi-cli": "kimi-code-cli",
+};
+
+export function skillAgentIdToCliId(agent: AgentId): string {
+  return SKILL_AGENT_CLI_IDS[agent] ?? agent;
+}
+
 // `path` is the skill's location in the shared store (~/.agents/skills/<name>) — a
 // self-contained skill dir usable as a `npx skills add <path>` source to surface the
 // same skill onto another agent (the store is shared; per-agent dirs are symlinks).
 export type InstalledSkill = { name: string; path: string; agents: AgentId[] };
 
+async function readInstalledSkillsJson(): Promise<string | null> {
+  const dir = await mkdtemp(join(tmpdir(), "syncthis-skills-list-"));
+  const outPath = join(dir, "skills.json");
+  const fh = await open(outPath, "w", 0o600);
+  try {
+    const res = await new Promise<{ ok: boolean }>((resolve) => {
+      let timedOut = false;
+      let settled = false;
+      const child = spawn("npx", ["-y", "skills", "list", "-g", "--json"], {
+        stdio: ["ignore", fh.fd, "ignore"],
+        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, SKILLS_LIST_TIMEOUT_MS);
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok });
+      };
+      child.on("error", () => finish(false));
+      child.on("close", (code) => finish(code === 0 && !timedOut));
+    });
+    await fh.close();
+    if (!res.ok) return null;
+    return await readFile(outPath, "utf8");
+  } finally {
+    await fh.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // Every globally-installed skill with the agents it's registered on, from
 // `npx skills list -g --json`. Returns null when the CLI can't be read (missing
 // npx, bad JSON) so callers can distinguish "couldn't read" from "no skills".
 export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
-  const res = await run("npx", ["-y", "skills", "list", "-g", "--json"], { timeoutMs: 60_000 });
-  if (!res.ok) return null;
+  const json = await readInstalledSkillsJson();
+  if (json === null) return null;
   try {
-    const arr = JSON.parse(res.stdout || "[]");
+    const arr = JSON.parse(json || "[]");
     if (!Array.isArray(arr)) return null;
     return (arr as Array<{ name?: unknown; path?: unknown; agents?: unknown }>)
       .map((s) => ({
@@ -216,7 +265,8 @@ export async function listInstalledSkills(): Promise<InstalledSkill[] | null> {
               .filter((a): a is AgentId => !!a)
           : [],
       }))
-      .filter((s) => s.name);
+      .filter((s) => s.name)
+      .map((s) => ({ ...s, agents: [...new Set(s.agents)] }));
   } catch {
     return null;
   }
@@ -326,7 +376,7 @@ async function skillName(skillMdPath: string): Promise<string> {
 // repo provides, globally, into each named agent, non-interactively.
 export function addArgs(repo: string, agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "add", repo, "-g", "-s", "*"];
-  for (const a of agents) args.push("-a", a);
+  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
   args.push("-y");
   return args;
 }
@@ -382,7 +432,7 @@ function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResul
 // already-installed skill (sourced from its shared-store dir) onto more agents.
 export function installedAddArgs(storePath: string, name: string, agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "add", storePath, "-g", "-s", name];
-  for (const a of agents) args.push("-a", a);
+  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
   args.push("-y");
   return args;
 }
@@ -452,7 +502,7 @@ export type SkillRemoveResult = {
 // production by the mirror — rather than packing values into a single variadic flag.
 export function removeArgs(names: string[], agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "remove", "-g"];
-  for (const a of agents) args.push("-a", a);
+  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
   for (const n of names) args.push("-s", n);
   args.push("-y");
   return args;

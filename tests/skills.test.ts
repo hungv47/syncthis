@@ -8,8 +8,12 @@ import {
   addArgs,
   addSkillRepos,
   addSkillsFromPlugins,
+  installedAddArgs,
   mcpCohort,
+  removeArgs,
   resolvePluginSkillSources,
+  skillAgentIdToCliId,
+  skillAgentLabelToId,
   skillCohort,
 } from "../src/skills.ts";
 
@@ -106,6 +110,22 @@ describe("addArgs", () => {
       "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "opencode", "-a", "gemini-cli", "-y",
     ]);
   });
+
+  test("translates syncthis agent ids to upstream skills CLI ids", () => {
+    expect(skillAgentIdToCliId("kimi-cli")).toBe("kimi-code-cli");
+    expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
+    expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
+    expect(addArgs("owner/repo", ["kimi-cli", "opencode"])).toEqual([
+      "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "kimi-code-cli", "-a", "opencode", "-y",
+    ]);
+    expect(installedAddArgs("/store/alpha", "alpha", ["kimi-cli"])).toEqual([
+      "-y", "skills", "add", "/store/alpha", "-g", "-s", "alpha", "-a", "kimi-code-cli", "-y",
+    ]);
+    expect(removeArgs(["alpha"], ["kimi-cli", "opencode"])).toEqual([
+      "-y", "skills", "remove", "-g", "-a", "kimi-code-cli", "-a", "opencode", "-s", "alpha", "-y",
+    ]);
+  });
 });
 
 describe("addSkillRepos", () => {
@@ -124,6 +144,15 @@ describe("addSkillRepos", () => {
     expect(r).toEqual([{ repo: "owner/kit", status: "added" }]);
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === "npx -y skills add owner/kit -g -s * -a codex -y")).toBe(true);
+  });
+
+  test("uses the upstream Kimi target id so one invalid agent does not poison the whole add", async () => {
+    await installFakeNpx({ exit: 0 });
+    const r = await addSkillRepos(["owner/kit"], ["kimi-cli", "opencode"]);
+    expect(r).toEqual([{ repo: "owner/kit", status: "added" }]);
+    const inv = await readInvocations();
+    expect(inv.some((l) => l.trim() === "npx -y skills add owner/kit -g -s * -a kimi-code-cli -a opencode -y")).toBe(true);
+    expect(inv.some((l) => l.includes("-a kimi-cli"))).toBe(false);
   });
 
   test("a genuine non-zero exit is reported as failed (mirror counts it, exits non-zero)", async () => {

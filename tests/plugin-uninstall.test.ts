@@ -385,6 +385,17 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a opencode -s convex-best-practices -y")).toBe(true);
   });
 
+  test("matches Codex's sanitized github-com plugin name for native uninstall", async () => {
+    await installFakeClaude(JSON.stringify([{ id: "github.com-owner-tool@mkt", enabled: true, installPath: join(workDir, "plugins", "tool") }]));
+    await installFakeCodex(codexTable([["github-com-owner-tool@plugins-cli", "installed, enabled", "1.0.0", "/c/tool"]]));
+    await installFakeNpx({ listJson: "[]" });
+
+    const r = await runPluginUninstall({ plugins: ["github.com-owner-tool"], agents: ["codex"], apply: true });
+    expect(r.native.find((t) => t.agent === "codex")?.present).toBe(true);
+    expect(r.nativeResults?.find((x) => x.agent === "codex")?.status).toBe("uninstalled");
+    expect((await readInvocations()).some((l) => l.trim() === "codex plugin remove -- github-com-owner-tool@plugins-cli")).toBe(true);
+  });
+
   // Regression (review finding 2): a skill-only scope must NOT silently no-op when
   // Claude's plugin list (the skill-name source) is unreadable.
   test("surfaces a Claude-read error instead of an empty skill plan", async () => {

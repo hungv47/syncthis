@@ -1,6 +1,6 @@
 import { expandHome } from "../io.ts";
 import { parseMarketplaceList, readLocalMarketplace, resolveLocalMarketplace } from "./marketplace.ts";
-import { assertSafeIdentifier, isSafeRepoSlug, parsePluginId, run } from "./shell.ts";
+import { assertSafeIdentifier, isSafeRepoSlug, parsePluginId, pluginNamesOverlap, run } from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -161,10 +161,10 @@ export const codexPluginAdapter: PluginAdapter = {
 
     // Already installed? (real install state, not config registration.)
     const present = rows.find(
-      (r) => r.installed && r.name === name && (!opts.marketplace || r.marketplace === opts.marketplace),
+      (r) => r.installed && pluginNamesOverlap(r.name, name) && (!opts.marketplace || r.marketplace === opts.marketplace),
     );
     if (present) {
-      return { agent: "codex", target: present.marketplace ? `${name}@${present.marketplace}` : name, status: "present" };
+      return { agent: "codex", target: present.marketplace ? `${present.name}@${present.marketplace}` : present.name, status: "present" };
     }
 
     // Preferred mechanism: install from the SOURCE agent's local marketplace clone.
@@ -414,7 +414,7 @@ export const codexPluginAdapter: PluginAdapter = {
     const rows = listRes.ok ? parseCodexListRows(listRes.stdout || "") : [];
 
     const installed = rows.filter(
-      (r) => r.installed && r.name === name && (!opts.marketplace || r.marketplace === opts.marketplace),
+      (r) => r.installed && pluginNamesOverlap(r.name, name) && (!opts.marketplace || r.marketplace === opts.marketplace),
     );
     if (installed.length === 0) {
       return { agent: "codex", target: opts.marketplace ? `${name}@${opts.marketplace}` : name, status: "absent" };
@@ -434,7 +434,8 @@ export const codexPluginAdapter: PluginAdapter = {
       }
     }
 
-    const target = marketplace ? `${name}@${marketplace}` : name;
+    const installedName = installed[0]?.name ?? name;
+    const target = marketplace ? `${installedName}@${marketplace}` : installedName;
     if (opts.dryRun) return { agent: "codex", target, status: "uninstalled", message: "dry-run" };
     const res = await run("codex", ["plugin", "remove", "--", target], { timeoutMs: REMOVE_TIMEOUT_MS });
     if (res.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };

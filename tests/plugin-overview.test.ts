@@ -82,6 +82,9 @@ async function writeMarketplaceWithSkill(repo: string, marketplace: string, skil
 describe("skillAgentLabelToId", () => {
   test("maps the skills CLI's display labels to syncthis ids", () => {
     expect(skillAgentLabelToId("Gemini CLI")).toBe("gemini-cli");
+    expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
+    expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
     expect(skillAgentLabelToId("Hermes Agent")).toBe("hermes-agent");
     expect(skillAgentLabelToId("OpenCode")).toBe("opencode");
     expect(skillAgentLabelToId("Pi")).toBe("pi");
@@ -99,10 +102,10 @@ describe("listInstalledSkills", () => {
     await installFakes({
       claudeJson: "[]",
       codexList: codexTable([]),
-      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Warp"]}]',
+      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Kimi Code CLI","Antigravity","Antigravity CLI","Warp"]}]',
     });
     const skills = await listInstalledSkills();
-    expect(skills).toEqual([{ name: "alpha", path: "", agents: ["opencode"] }]); // "Warp" dropped
+    expect(skills).toEqual([{ name: "alpha", path: "", agents: ["opencode", "kimi-cli", "antigravity"] }]); // "Warp" dropped
   });
 });
 
@@ -111,7 +114,7 @@ describe("buildPluginOverview", () => {
     await installFakes({
       claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: "/x/foo" }]),
       codexList: codexTable([["bar@mkt", "installed, enabled", "1.0.0", "/c/bar"]]),
-      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Gemini CLI"]}]',
+      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Gemini CLI","Kimi Code CLI"]}]',
     });
     await writeMarketplaceWithSkill("owner/foo", "mkt", "alpha");
 
@@ -127,8 +130,8 @@ describe("buildPluginOverview", () => {
     expect(opencode?.skills[0]?.repo).toBe("owner/foo");
     const gemini = o.derived.find((d) => d.agent === "gemini-cli");
     expect(gemini?.skills.map((s) => s.name)).toEqual(["alpha"]);
-    // an agent that doesn't hold it shows none
-    expect(o.derived.find((d) => d.agent === "kimi-cli")?.skills).toEqual([]);
+    const kimi = o.derived.find((d) => d.agent === "kimi-cli");
+    expect(kimi?.skills.map((s) => s.name)).toEqual(["alpha"]);
   });
 
   // Regression (Claude review P3): the overview must match derived skills by the same
