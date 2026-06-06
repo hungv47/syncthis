@@ -114,7 +114,8 @@ describe("addArgs", () => {
   test("translates syncthis agent ids to upstream skills CLI ids", () => {
     expect(skillAgentIdToCliId("kimi-cli")).toBe("kimi-code-cli");
     expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
-    expect(skillAgentLabelToId("Antigravity CLI")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
     expect(addArgs("owner/repo", ["kimi-cli", "opencode"])).toEqual([
       "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "kimi-code-cli", "-a", "opencode", "-y",
     ]);

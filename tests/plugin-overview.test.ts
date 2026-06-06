@@ -83,7 +83,8 @@ describe("skillAgentLabelToId", () => {
   test("maps the skills CLI's display labels to syncthis ids", () => {
     expect(skillAgentLabelToId("Gemini CLI")).toBe("gemini-cli");
     expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
-    expect(skillAgentLabelToId("Antigravity CLI")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
+    expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
     expect(skillAgentLabelToId("Hermes Agent")).toBe("hermes-agent");
     expect(skillAgentLabelToId("OpenCode")).toBe("opencode");
     expect(skillAgentLabelToId("Pi")).toBe("pi");
@@ -101,7 +102,7 @@ describe("listInstalledSkills", () => {
     await installFakes({
       claudeJson: "[]",
       codexList: codexTable([]),
-      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Kimi Code CLI","Antigravity CLI","Warp"]}]',
+      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Kimi Code CLI","Antigravity","Antigravity CLI","Warp"]}]',
     });
     const skills = await listInstalledSkills();
     expect(skills).toEqual([{ name: "alpha", path: "", agents: ["opencode", "kimi-cli", "antigravity"] }]); // "Warp" dropped

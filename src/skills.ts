@@ -180,7 +180,6 @@ const SKILL_AGENT_LABELS: Record<string, AgentId> = {
   "kimi code cli": "kimi-cli",
   kimi: "kimi-cli",
   antigravity: "antigravity",
-  "antigravity cli": "antigravity",
   "github copilot": "github-copilot",
   "github copilot cli": "github-copilot",
   windsurf: "windsurf",
