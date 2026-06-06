@@ -21,7 +21,7 @@
 import { claudeMarketplaceClonePaths } from "./claude.ts";
 import { pluginAdapters } from "./index.ts";
 import { resolvePluginMcpServers, type PluginMcpServer, type PluginMcpSkip } from "./mcp.ts";
-import { isSafeRepoSlug, run } from "./shell.ts";
+import { isSafeRepoSlug, pluginIdentityKeys, run } from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -135,12 +135,13 @@ function adapterFor(id: AgentId): PluginAdapter | undefined {
 
 // Cross-agent identity is the BARE plugin name, not name@marketplace. The
 // marketplace tag is agent-local: the same upstream plugin is "forsvn-skills@
-// forsvn-skills" in Claude but "forsvn-skills@plugins-cli" in Codex. Keying on
-// the tag would treat every such plugin as missing and queue a spurious re-add.
-function indexByName(plugins: PluginRecord[]): Map<string, PluginRecord> {
-  const m = new Map<string, PluginRecord>();
-  for (const p of plugins) m.set(p.name, p);
-  return m;
+// forsvn-skills" in Claude but "forsvn-skills@plugins-cli" in Codex. Some URL-
+// derived names are also sanitized per target (`github.com-x` vs `github-com-x`).
+// Keying on the agent-local spelling would queue spurious re-adds.
+function identitySet(plugins: PluginRecord[]): Set<string> {
+  const out = new Set<string>();
+  for (const p of plugins) for (const key of pluginIdentityKeys(p.name)) out.add(key);
+  return out;
 }
 
 export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
@@ -181,11 +182,17 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
       continue;
     }
 
-    const fromIdx = indexByName(fromRead.plugins);
-    const toIdx = indexByName(toRead.plugins);
-
+    const toIdentities = identitySet(toRead.plugins);
     const add: PluginRecord[] = [];
-    for (const [name, p] of fromIdx) if (!toIdx.has(name)) add.push(p);
+    const queued = new Set<string>();
+    for (const p of fromRead.plugins) {
+      const keys = pluginIdentityKeys(p.name);
+      if (keys.some((key) => toIdentities.has(key))) continue;
+      const queueKey = keys[0]!;
+      if (queued.has(queueKey)) continue;
+      queued.add(queueKey);
+      add.push(p);
+    }
 
     const target: MirrorTarget = { to: a.id, toRead, diff: { add } };
 

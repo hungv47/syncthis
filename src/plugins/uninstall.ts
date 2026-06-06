@@ -16,7 +16,7 @@
 
 import { pluginAdapters } from "./index.ts";
 import { claudePluginAdapter } from "./claude.ts";
-import { parsePluginId } from "./shell.ts";
+import { parsePluginId, pluginNamesOverlap } from "./shell.ts";
 import type { PluginUninstallResult } from "./types.ts";
 import {
   listInstalledSkills,
@@ -113,7 +113,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   // name installed from multiple marketplaces is never collapsed to an arbitrary pick.
   const specs = pluginSet.map((p) => parsePluginId(p));
   const recordMatches = (name: string, marketplace?: string) =>
-    specs.some((s) => s.name === name && (!s.marketplace || s.marketplace === marketplace));
+    specs.some((s) => pluginNamesOverlap(s.name, name) && (!s.marketplace || s.marketplace === marketplace));
 
   // --- Native plugin uninstall targets (Claude / Codex among the requested) ---
   const native: NativeUninstallTarget[] = [];
@@ -126,7 +126,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
         continue;
       }
       const matches = read.plugins.filter(
-        (p) => p.name === spec.name && (!spec.marketplace || p.marketplace === spec.marketplace),
+        (p) => pluginNamesOverlap(p.name, spec.name) && (!spec.marketplace || p.marketplace === spec.marketplace),
       );
       if (matches.length === 0) {
         native.push({ agent: adapter.id, plugin: spec.name, marketplace: spec.marketplace, present: false });
@@ -134,7 +134,7 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
         // One target per matched marketplace — uninstall every instance the spec
         // names (a bare name from two marketplaces removes both, each qualified).
         for (const rec of matches) {
-          native.push({ agent: adapter.id, plugin: spec.name, marketplace: rec.marketplace, present: true });
+          native.push({ agent: adapter.id, plugin: rec.name, marketplace: rec.marketplace, present: true });
         }
       }
     }

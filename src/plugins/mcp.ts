@@ -3,7 +3,7 @@
 // A Claude plugin can bundle MCP servers (a root `.mcp.json`, or an `mcpServers`
 // field in its manifest). Those servers are standard MCP config, so they're
 // portable to ANY MCP-capable agent — but the plugin-native cohort (Claude, Codex,
-// Cursor) already gets them by installing the plugin. The 8 non-plugin agents
+// Cursor) already gets them by installing the plugin. The non-plugin MCP cohort
 // can't load plugins at all, so the mirror lifts a plugin's bundled MCP servers
 // out and writes them into those agents' own MCP configs (via the normal adapters).
 //

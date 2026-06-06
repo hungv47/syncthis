@@ -184,6 +184,15 @@ describe("runMirror — cross-agent marketplace tags (regression)", () => {
     expect(mirrorHasChanges(report)).toBe(false);
   });
 
+  test("same URL-derived plugin under Codex's sanitized github-com name is NOT re-added", async () => {
+    await installFakeCli("claude", JSON.stringify([{ id: "github.com-owner-tool@gh-mkt", enabled: true }]));
+    await installFakeCli("codex", codexInstalled("github-com-owner-tool@plugins-cli"));
+    const report = await runMirror({ from: "claude-code", apply: false });
+    const codex = report.targets.find((t) => t.to === "codex")!;
+    expect(codex.diff!.add).toEqual([]);
+    expect(mirrorHasChanges(report)).toBe(false);
+  });
+
   test("only a genuinely-absent bare name is proposed for add", async () => {
     await installFakeCli(
       "claude",
