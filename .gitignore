@@ -5,6 +5,9 @@ node_modules
 out
 dist
 *.tgz
+# …but the committed demo GIFs live under docs/demos/out/ (not build output).
+!docs/demos/out/
+!docs/demos/out/*.gif
 
 # code coverage
 coverage

@@ -6,7 +6,7 @@
 
 ![syncthis](./assets/banners/syncthis.png)
 
-![syncthis run mirroring MCP servers across 12 agents](./assets/demo.gif)
+![syncthis mcp sync — union MCP servers across every agent](./docs/demos/out/mcp-sync.gif)
 
 **One CLI to keep MCP servers in sync across your AI coding agents — plus plugin and skills propagation.**
 
@@ -43,6 +43,22 @@ npm install -g @hungv47/syncthis
 ```
 
 After global install, drop the `npx @hungv47/syncthis` prefix — every command below works as `syncthis <cmd>` instead.
+
+## Demos
+
+Reproducible recordings (regenerate with `docs/demos/build.sh` — see [`docs/demos/`](./docs/demos/)).
+
+**Directional mirror — preview, then apply with the backup safety net**
+
+![syncthis mcp directional mirror with dry-run then confirm](./docs/demos/out/mcp-directional.gif)
+
+**Interactive picker — guided, three-noun walk-through**
+
+![syncthis interactive picker walk-through](./docs/demos/out/interactive.gif)
+
+**The command list**
+
+![syncthis help — noun-first command list](./docs/demos/out/help.gif)
 
 ## What syncthis is — and isn't
 
