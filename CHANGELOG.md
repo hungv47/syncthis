@@ -2,6 +2,11 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.15.1] — 2026-06-09
+
+### Fixed
+- **First-run welcome banner now shows the noun-first grammar.** The 0.15.0 refactor moved the canonical surface to noun-first verbs but left `welcome.tsx`'s hardcoded command list on the pre-0.15 spelling (`add plugin`, bare `mcp`/`skills`, `<from> <to>`, `rm <server>`, `plugin list`). The banner now lists `plugins add`, `mcp sync`, `skills update`, `mcp <from> <to>`, `mcp rm`, and `plugins list`, matching `syncthis help`.
+
 ## [0.15.0] — 2026-06-09
 
 Includes everything in 0.14.1 (cross-agent plugin/skill identity hardening), which was never published on its own.
