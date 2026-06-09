@@ -14,61 +14,26 @@ const HELP = `syncthis — keep your AI tools in sync
 
   syncthis is a sync layer, not an installer. install MCP servers, plugins, and
   skills with whatever tool you prefer (mcpm, claude mcp add, claude plugin
-  install, npx plugins add, npx skills add, …), then run \`syncthis sync\` to
-  share them across every coding agent.
+  install, npx plugins add, npx skills add, …), then let syncthis share them
+  across every coding agent.
 
-  it does three things:
-    • MCP servers — union sync across all 12 agents (the unique core)
-    • plugins     — add selected Claude plugins to chosen agents
-                    (Codex natively; Cursor via \`npx plugins\`)
-    • skills      — \`npx skills update -y\`, plus surfacing plugin-bundled skills
-                    to the non-plugin agents (vercel-labs/skills)
+  it manages three things — plus one flagship that does the everyday case in one shot:
 
 usage:
-  syncthis                         interactive picker (or HELP if non-TTY)
-  syncthis sync [--dry-run] [--no-skills]
-  syncthis run  [--dry-run] [--no-skills]    alias for sync
-  syncthis mcp  [--dry-run]                  MCP only — skip skills update
-  syncthis skills                            skills only — \`npx skills update -y\`
-  syncthis skills from-plugins [--dry-run]   add skills bundled in Claude plugins to the 8
-                                             non-plugin agents (opencode, gemini-cli, windsurf, …)
-  syncthis update [--dry-run]                update syncthis itself to the latest npm version
-  syncthis version                           print the installed syncthis version
-  syncthis <from> <to> [--yes] [--dry-run]   one-way mirror MCP from one agent to another
-  syncthis from <agent> --all [--yes] [--dry-run]
-                                             one-way mirror MCP from one agent to every other agent
-  syncthis rm <server> --all [--yes] [--dry-run]
-                                             remove one MCP server from every supported agent
+  syncthis                          interactive picker (or this help if non-TTY)
+  syncthis sync  [--dry-run] [--no-skills]   flagship — MCP union + skills, everywhere
+                                             (alias: run)
 
-  selective add / remove (pick items + agents):
-  syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
-  syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]
-                                             (plugin must be installed on claude-code, the source)
-  syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
-  syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
-  syncthis rm  plugin <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
-                                             (no "add mcp" — syncthis mirrors MCP servers, it
-                                             doesn't install them; to remove a server literally
-                                             named mcp/skill/plugin use the explicit noun, e.g.
-                                             "rm mcp mcp --all")
+  syncthis plugins <list|mirror|add|rm>      manage plugins      (syncthis plugins help)
+  syncthis skills  <update|add|from-plugins|rm>
+                                             manage skills       (syncthis skills help)
+  syncthis mcp     <sync|doctor|from|rm>     manage MCP servers  (syncthis mcp help)
+  syncthis mcp <from> <to>                   one-way MCP mirror between two agents
+
   syncthis doctor                            MCP coverage + conflict report
-  syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]
-                                             batch shortcut: make every <primary> plugin reachable on
-                                             every other agent. Codex gets native plugins (missing
-                                             marketplaces are registered automatically); Cursor is
-                                             pushed via \`npx plugins --target cursor\`; the non-plugin
-                                             agents get the bundled skills via \`npx skills add\` AND the
-                                             bundled MCP servers lifted into their MCP config (additive,
-                                             conflicts left untouched). Anything Codex can't load as a
-                                             plugin falls back to skills. Never uninstalls.
-                                             --no-provision skips network registration.
-  syncthis plugin list                       overview of plugins across every agent (read-only)
-  syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
-                                             uninstall plugin(s): the native plugin from
-                                             claude-code/codex AND the surfaced skills from the
-                                             non-plugin agents (npx skills remove). Guarded:
-                                             explicit scope, diff, confirm/--yes, --dry-run.
-  syncthis help
+  syncthis update  [--dry-run]               update syncthis itself to the latest npm version
+  syncthis version                           print the installed syncthis version
+  syncthis help                              this message
 
 what sync does:
   1. reads MCP servers from all 12 supported agents.
@@ -100,10 +65,49 @@ flags:
                   still run.) By default mirror provisions (shells out, hits the
                   network) so a plugin's content actually reaches Codex.
 
-removing a server: use \`syncthis rm <server> --all --dry-run\`, review the diff,
+removing a server: use \`syncthis mcp rm <server> --all --dry-run\`, review the diff,
 then rerun with \`--yes\`. plain union sync will re-propagate a server if it
 still exists in any agent.
 `;
+
+// Scoped help, one per noun. Printed by the group routers on \`<noun> help\` or an
+// unknown verb. The top-level HELP stays the map; these carry the per-noun detail.
+const PLUGINS_HELP = `syncthis plugins — manage plugins across agents (source: claude-code)
+
+  syncthis plugins list                      read-only overview across every agent
+  syncthis plugins mirror <primary> [--no-provision] [--yes] [--dry-run]
+                                             make every <primary> plugin reachable everywhere
+                                             (Codex native; Cursor via npx plugins; non-plugin
+                                             agents get the bundled skills + lifted MCP servers).
+                                             Additive — never uninstalls.
+  syncthis plugins add <name…> --all | --agents <a,b,c> [--dry-run]
+                                             push chosen plugins to chosen agents
+  syncthis plugins rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
+                                             guarded uninstall: native plugin (claude/codex) +
+                                             surfaced skills (rest). diff, confirm/--yes, --dry-run.`;
+
+const SKILLS_HELP = `syncthis skills — manage skills (delegated to vercel-labs/skills)
+
+  syncthis skills update                     npx skills update -y (refresh every installed skill)
+  syncthis skills add <repo…> --all | --agents <a,b,c> [--dry-run]
+                                             add skill repo(s) to chosen agents
+  syncthis skills from-plugins [--dry-run]   surface Claude-plugin-bundled skills to the
+                                             non-plugin agents (gemini-cli, kimi-cli, opencode, …, pi)
+  syncthis skills rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run]
+                                             guarded skill removal`;
+
+const MCP_HELP = `syncthis mcp — manage MCP servers (syncthis mirrors servers; it never installs them)
+
+  syncthis mcp sync [--dry-run]              union sync across every MCP agent (skips skills)
+  syncthis mcp <from> <to> [--yes] [--dry-run]
+                                             one-way mirror from one agent to another
+  syncthis mcp from <agent> --all [--yes] [--dry-run]
+                                             fan one agent out to every other agent
+  syncthis mcp rm <server…> --all | --agents <a,b,c> [--yes] [--dry-run]
+                                             remove server(s) from the scoped agents
+  syncthis mcp doctor                        coverage + conflict report
+
+  (no \`mcp add\` — add a server with \`claude mcp add\`/mcpm, then \`syncthis sync\`.)`;
 
 const COLOR = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code: string, s: string) => (COLOR ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -149,29 +153,57 @@ async function cmdSync(argv: string[]) {
   printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"], onPluginSkillProgress: pluginSkillProgress }));
 }
 
+// MCP-only union sync — the body behind both bare `mcp` (legacy) and `mcp sync`.
 async function cmdMcp(argv: string[]) {
   const { runSync } = await import("../src/sync.ts");
   const { values } = parse(argv);
   printSync(await runSync({ dryRun: !!values["dry-run"], skipSkills: true }));
 }
 
+// `syncthis mcp <verb>` group router. Bare `mcp` (and `mcp --dry-run`) keep the legacy
+// union-sync behavior; the canonical form is `mcp sync`. A first positional that isn't a
+// known verb is treated as the source of a directional `mcp <from> <to>` mirror.
+async function cmdMcpGroup(argv: string[]) {
+  const sub = argv[0];
+  if (sub === "help" || sub === "-h" || sub === "--help") return void console.log(MCP_HELP);
+  if (!sub || sub.startsWith("-")) return cmdMcp(argv); // bare / `mcp --dry-run` → legacy union sync
+  if (sub === "sync") return cmdMcp(argv.slice(1));
+  if (sub === "doctor") return cmdDoctor();
+  if (sub === "from") return cmdFanOut(argv.slice(1));
+  if (sub === "rm" || sub === "remove") return cmdRmMcp(argv.slice(1));
+  const second = argv[1];
+  if (second && !second.startsWith("-")) return cmdDirectional(sub, second, argv.slice(2));
+  console.error(red(`mcp: unknown verb \`${sub}\`. try \`syncthis mcp help\`.`));
+  process.exit(2);
+}
+
+// `syncthis plugins <verb>` group router. Bare `plugins` prints scoped help (the legacy
+// singular `plugin` keeps its read-only list-on-bare behavior as an alias in main()).
+async function cmdPlugins(argv: string[]) {
+  const sub = argv[0];
+  if (!sub || sub === "help" || sub === "-h" || sub === "--help") return void console.log(PLUGINS_HELP);
+  if (sub === "list") return cmdPluginList();
+  if (sub === "mirror") return cmdMirror(argv.slice(1));
+  if (sub === "add") return cmdAddPlugin(argv.slice(1));
+  if (sub === "rm" || sub === "remove" || sub === "uninstall") return cmdPluginRemove(argv.slice(1));
+  console.error(red(`plugins: unknown verb \`${sub}\`. try \`syncthis plugins help\`.`));
+  process.exit(2);
+}
+
+// `syncthis skills <verb>` group router. Bare `skills` (and `skills --flag`) keep the
+// legacy `npx skills update` behavior; the canonical form is `skills update`.
 async function cmdSkills(argv: string[]) {
   const sub = argv[0];
   if (sub === "from-plugins") return cmdSkillsFromPlugins(argv.slice(1));
-  if (sub === "help" || sub === "-h" || sub === "--help") {
-    console.log(
-      "syncthis skills              — npx skills update -y (refresh every installed skill)\n" +
-        "syncthis skills from-plugins — add skills bundled in Claude plugins to the non-plugin agents\n" +
-        "                               (gemini-cli, kimi-cli, antigravity, github-copilot, windsurf,\n" +
-        "                                opencode, openclaw, hermes-agent, goose, pi). [--dry-run]",
-    );
-    return;
-  }
+  if (sub === "update") return cmdSkillsOnly();
+  if (sub === "add") return cmdAddSkill(argv.slice(1));
+  if (sub === "rm" || sub === "remove") return cmdRmSkill(argv.slice(1));
+  if (sub === "help" || sub === "-h" || sub === "--help") return void console.log(SKILLS_HELP);
   if (sub && !sub.startsWith("-")) {
-    console.error(red(`unknown skills subcommand: ${sub}. use \`skills\` or \`skills from-plugins\`.`));
+    console.error(red(`skills: unknown verb \`${sub}\`. try \`syncthis skills help\`.`));
     process.exit(2);
   }
-  return cmdSkillsOnly();
+  return cmdSkillsOnly(); // bare / `skills --flag` → legacy update
 }
 
 async function cmdSkillsOnly() {
@@ -1307,17 +1339,21 @@ async function main() {
 
   if (cmd === "help" || cmd === "-h" || cmd === "--help") return console.log(HELP);
   if (cmd === "version" || cmd === "--version" || cmd === "-v") return cmdVersion();
+  // Canonical noun-first grammar.
   if (cmd === "sync") return cmdSync(rest);
   if (cmd === "run") return cmdSync(rest);
-  if (cmd === "mcp") return cmdMcp(rest);
+  if (cmd === "plugins") return cmdPlugins(rest);
   if (cmd === "skills") return cmdSkills(rest);
-  if (cmd === "update") return cmdUpdate(rest);
+  if (cmd === "mcp") return cmdMcpGroup(rest);
   if (cmd === "doctor") return cmdDoctor();
+  if (cmd === "update") return cmdUpdate(rest);
+
+  // Legacy aliases — still work, not advertised in help (see CLAUDE.md).
   if (cmd === "mirror") return cmdMirror(rest);
   if (cmd === "from") return cmdFanOut(rest);
   if (cmd === "add") return cmdAdd(rest);
   if (cmd === "rm" || cmd === "remove") return cmdRm(rest);
-  if (cmd === "plugin" || cmd === "plugins") return cmdPlugin(rest);
+  if (cmd === "plugin") return cmdPlugin(rest);
 
   // Directional: two positional agent IDs.
   if (rest.length >= 1 && !cmd.startsWith("-")) {
