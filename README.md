@@ -90,34 +90,38 @@ For removals, do not rely on union sync — it is additive only. Use the explici
 
 ## Commands
 
+The CLI is **noun-first** — three nouns (`plugins`, `skills`, `mcp`), each with scoped verbs, plus a flagship `sync`:
+
 ```
-syncthis                              # interactive picker (or HELP if non-TTY)
-syncthis run    [--dry-run] [--no-skills]   # MCP + skills (alias for sync)
-syncthis sync   [--dry-run] [--no-skills]   # same as run
-syncthis mcp    [--dry-run]                 # MCP only — skip skills update
-syncthis skills                             # skills only — `npx skills update -y`
-syncthis update [--dry-run]                 # update syncthis itself to latest
-syncthis version                            # print the installed syncthis version
-syncthis <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
-syncthis from <agent> --all [--yes] [--dry-run] # mirror one agent to every other agent
-syncthis rm <server> --all [--yes] [--dry-run]  # remove one MCP server everywhere
-syncthis doctor                             # MCP coverage + conflict report
+syncthis                              # interactive picker (or help if non-TTY)
+syncthis sync   [--dry-run] [--no-skills]   # flagship: MCP union + skills (alias: run)
 
 # Plugins → chosen agents (Codex/Cursor as plugins; non-plugin agents get skills + bundled MCPs). Additive.
-syncthis add plugin <name…> --agents <a,b,c> | --all [--dry-run]  # source = claude-code
-syncthis mirror <primary> [--no-provision] [--yes] [--dry-run] # batch shortcut: every plugin from primary
-syncthis plugin list                        # cross-agent plugin overview (read-only)
-syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
-                                            # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
+syncthis plugins list                       # cross-agent plugin overview (read-only)
+syncthis plugins mirror <primary> [--no-provision] [--yes] [--dry-run]  # every plugin from primary → all
+syncthis plugins add <name…> --all | --agents <a,b,c> [--dry-run]   # source = claude-code
+syncthis plugins rm  <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
+                                            # guarded uninstall: native plugin (claude/codex) + surfaced skills
 
-# Selective add / remove — pick the exact items + agents
-syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
-syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
-syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
-syncthis rm  plugin <name…>   …             # alias of `plugin rm`
-# (no `add mcp` — syncthis mirrors MCP servers, it doesn't install them)
-syncthis help
+syncthis skills update                      # `npx skills update -y`
+syncthis skills add <repo…> --all | --agents <a,b,c> [--dry-run]
+syncthis skills from-plugins [--dry-run]    # surface Claude-plugin-bundled skills to non-plugin agents
+syncthis skills rm  <name…> --all | --agents <a,b,c> [--yes] [--dry-run]
+
+syncthis mcp sync [--dry-run]               # MCP-only union sync (skip skills)
+syncthis mcp <from> <to> [--yes] [--dry-run]    # one-way mirror MCP from one agent to another
+syncthis mcp from <agent> --all [--yes] [--dry-run] # fan one agent out to every other agent
+syncthis mcp rm <server…> --all | --agents <a,b,c> [--yes] [--dry-run]
+syncthis mcp doctor                         # MCP coverage + conflict report (alias: doctor)
+# (no `mcp add` — syncthis mirrors MCP servers, it doesn't install them)
+
+syncthis doctor                             # MCP coverage + conflict report
+syncthis update [--dry-run]                 # update syncthis itself to latest
+syncthis version                            # print the installed syncthis version
+syncthis help                               # noun-first overview
 ```
+
+> The earlier flat commands (`run`, `mirror`, `from`, `<from> <to>`, `add skill|plugin`, `rm mcp|skill|plugin`, `plugin list|rm`, bare `mcp`/`skills`) still work as unadvertised aliases — nothing breaks if you've scripted against them.
 
 `--dry-run` prints what would change without writing.
 `--no-skills` skips the skills update phase.
