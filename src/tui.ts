@@ -34,7 +34,7 @@ import {
   type PickerItem,
   type PickerRow,
 } from "./picker-logic.ts";
-import { S, c } from "./tui-style.ts";
+import { S, c, breadcrumb } from "./tui-style.ts";
 import type { AgentId } from "./types.ts";
 import type { PluginRecord } from "./plugins/types.ts";
 
@@ -45,6 +45,13 @@ type MenuOption<T extends string> = { value: T; label: string; hint?: string };
 type MenuResult = "back" | "done";
 
 class FlowCancel extends Error {}
+
+// Orientation header for a multi-step flow: a breadcrumb title + a one-line "what this
+// does", rendered once at the top of each operation so the user always knows where they
+// are in the source → items → destinations → preview → confirm walk and what it produces.
+function flowHeader(path: string[], what: string) {
+  note(what, breadcrumb(path));
+}
 
 export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
@@ -142,9 +149,13 @@ async function manageMcps(): Promise<MenuResult> {
   ]);
   if (!op || op === "back") return "back";
   if (op === "sync") await syncSelectedMcps();
-  else if (op === "everything") await doSync({ skipSkills: false });
-  else if (op === "mcp-only") await doSync({ skipSkills: true });
-  else if (op === "doctor") await doDoctor();
+  else if (op === "everything") {
+    flowHeader(["MCPs", "Sync everything"], "MCP union sync across every agent, then surface plugin-derived skills and run a skills update.");
+    await doSync({ skipSkills: false });
+  } else if (op === "mcp-only") {
+    flowHeader(["MCPs", "Sync all MCPs only"], "Union sync MCP servers across every agent. Skips all skill steps.");
+    await doSync({ skipSkills: true });
+  } else if (op === "doctor") await doDoctor();
   else await removeMcps();
   return "done";
 }
@@ -183,12 +194,14 @@ async function doSync(opts: { skipSkills?: boolean }) {
 }
 
 async function doSkills() {
+  flowHeader(["Skills", "Update"], "Refresh every installed skill (npx skills update -y).");
   const r = await runSkillsOnly();
   if (r.ok) log.success("skills: npx skills update -y");
   else log.error(`skills: ${r.message ?? "failed"}`);
 }
 
 async function doDoctor() {
+  flowHeader(["Check problems"], "MCP coverage and conflicts across every agent. Read-only.");
   const r = await runDoctor();
   const errors = r.reads.filter((rd) => rd.error).length;
   const missing = r.reads.filter((rd) => !rd.exists && !rd.error).length;
@@ -199,6 +212,7 @@ async function doDoctor() {
 }
 
 async function doPluginList() {
+  flowHeader(["Plugins", "List"], "Read-only overview of plugins across every agent — native plugins plus plugin-derived skills on the non-plugin agents.");
   const o = await buildPluginOverview();
   for (const r of o.native) {
     if (r.error) log.error(`${r.agent}: ${r.error}`);
@@ -219,6 +233,10 @@ async function doPluginList() {
 }
 
 async function syncPlugins() {
+  flowHeader(
+    ["Plugins", "Sync"],
+    "Share installed plugins from a source agent to others. Plugin agents get the plugin itself; non-plugin agents get its bundled skills + MCP servers. Additive — never uninstalls.",
+  );
   // Claude is the only agent that can supply plugins to others (it exposes the
   // marketplace → repo map AND keeps every marketplace cloned on disk for the
   // network-free local-marketplace install). Present that honestly.
@@ -309,6 +327,7 @@ async function allAvailablePluginItems(installed: PluginRecord[]): Promise<Picke
 }
 
 async function removePlugins() {
+  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes the native plugin (claude/codex) and its surfaced skills (other agents). You'll preview the exact changes and confirm before anything is removed.");
   const reads = await listPlugins();
   const names = dedupe(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name)))).sort();
   if (names.length === 0) {
@@ -376,6 +395,7 @@ async function removePlugins() {
 // symlinks via `npx skills add <storePath> -a <dest>` — but the source-agent framing
 // matches the plugin/MCP flow ("bring this agent's skills to those agents").
 async function shareSkills() {
+  flowHeader(["Skills", "Share"], "Copy a source agent's installed skills onto other agents.");
   const installed = await listInstalledSkills();
   if (!installed || installed.length === 0) {
     log.info("no installed skills found (or `npx skills list` unavailable).");
@@ -428,6 +448,7 @@ async function shareSkills() {
 }
 
 async function addSkillsFromRepo() {
+  flowHeader(["Skills", "Add from repo"], "Add skill repo(s) by owner/repo slug to chosen agents (via npx skills add).");
   const repoRaw = await text({
     message: "skill repo(s) to add (comma-separated)",
     placeholder: "owner/repo, owner/other",
@@ -458,6 +479,7 @@ async function addSkillsFromRepo() {
 }
 
 async function syncPluginDerivedSkills() {
+  flowHeader(["Skills", "Sync from plugins"], "Surface the skills bundled inside your Claude plugins to the non-plugin agents that can't read plugins directly.");
   const source = await pickOne<AgentId>("plugin skill source agent", [
     { value: "claude-code", label: "claude-code", hint: "installed Claude plugins" },
   ]);
@@ -495,6 +517,7 @@ async function syncPluginDerivedSkills() {
 }
 
 async function removeSkills() {
+  flowHeader(["Skills", "Remove"], "Remove named skills from chosen agents. You'll confirm before anything is removed.");
   const installed = await listInstalledSkills();
   if (!installed || installed.length === 0) {
     log.info("no installed skills found (or `npx skills list` unavailable).");
@@ -522,6 +545,7 @@ async function removeSkills() {
 }
 
 async function syncSelectedMcps() {
+  flowHeader(["MCPs", "Sync selected"], "Additively share chosen MCP servers from one agent to others. A name that already exists with a different config is left untouched and reported — never overwritten.");
   const source = await pickOne<AgentId>("MCP source agent", listAgentIds().map((id) => ({ value: id, label: id })));
   if (!source) return;
 
@@ -563,6 +587,7 @@ async function syncSelectedMcps() {
 }
 
 async function removeMcps() {
+  flowHeader(["MCPs", "Remove"], "Remove MCP server(s) from chosen agents. You'll preview the exact writes and confirm first.");
   const doc = await runDoctor();
   const names = doc.coverage.map((c) => c.name).sort();
   if (names.length === 0) {

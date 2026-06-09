@@ -74,31 +74,38 @@ tests/                → sync, adapters, mirror, plugin-adapters, plugin-instal
 
 ## Commands
 
-```
-syncthis                                 # interactive picker (or HELP if non-TTY)
-syncthis run    [--dry-run] [--no-skills]    # MCP union + skills (alias for sync)
-syncthis sync   [--dry-run] [--no-skills]
-syncthis mcp    [--dry-run]                  # MCP only
-syncthis skills                              # skills only — `npx skills update -y`
-syncthis skills from-plugins [--dry-run]     # add Claude-plugin-bundled skills to the non-plugin skill cohort
-syncthis <from> <to> [--yes] [--dry-run]     # one-way MCP mirror A → B
-syncthis from <agent> --all [--yes] [--dry-run]   # fan one agent out to all others
-syncthis rm <server> --all [--yes] [--dry-run]    # remove one MCP server everywhere
-syncthis doctor                              # MCP coverage + conflicts
-syncthis mirror <primary> [--no-provision] [--yes] [--dry-run]  # plugin mirror → every agent (additive)
-syncthis plugin list                         # read-only cross-agent plugin overview
-syncthis plugin rm <plugin…> [--all | --agents <a,b,c>] [--yes] [--dry-run] [--keep-data]
-                                             # guarded uninstall: native plugin (claude/codex) + surfaced skills (rest)
+The CLI is **noun-first**: three nouns (`plugins`, `skills`, `mcp`) each with scoped verbs, plus a flagship `sync`. This is the canonical, advertised surface (`syncthis help` and `syncthis <noun> help`). Every pre-0.15 command still works as an **unadvertised alias** routing to the same handler (see "Legacy aliases" below) — the move was additive, non-breaking.
 
-# selective add / remove — pick items + agents (verb-noun grammar, additive `add`, guarded `rm`)
-syncthis add skill  <repo…>   --agents <a,b,c> | --all [--dry-run]
-syncthis add plugin <name…>   --agents <a,b,c> | --all [--dry-run]   # source = claude-code
-syncthis rm  skill  <name…>   --agents <a,b,c> | --all [--yes] [--dry-run]
-syncthis rm  mcp    <server…> --agents <a,b,c> | --all [--yes] [--dry-run]
-syncthis rm  plugin <name…>   …              # alias of `plugin rm`
-# no `add mcp` — syncthis mirrors MCP servers, it doesn't install them
-syncthis help
 ```
+syncthis                                 # interactive picker (or help if non-TTY)
+syncthis sync   [--dry-run] [--no-skills]    # flagship: MCP union + skills (alias: run)
+
+syncthis plugins list                        # read-only cross-agent plugin overview
+syncthis plugins mirror <primary> [--no-provision] [--yes] [--dry-run]  # → every agent (additive)
+syncthis plugins add <name…> --all | --agents <a,b,c> [--dry-run]   # source = claude-code
+syncthis plugins rm  <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
+                                             # guarded uninstall: native plugin (claude/codex) + surfaced skills
+
+syncthis skills update                       # `npx skills update -y`
+syncthis skills add <repo…> --all | --agents <a,b,c> [--dry-run]
+syncthis skills from-plugins [--dry-run]     # surface Claude-plugin-bundled skills to non-plugin agents
+syncthis skills rm  <name…> --all | --agents <a,b,c> [--yes] [--dry-run]
+
+syncthis mcp sync [--dry-run]                # MCP-only union sync (skips skills)
+syncthis mcp <from> <to> [--yes] [--dry-run] # one-way MCP mirror A → B
+syncthis mcp from <agent> --all [--yes] [--dry-run]   # fan one agent out to all others
+syncthis mcp rm <server…> --all | --agents <a,b,c> [--yes] [--dry-run]
+syncthis mcp doctor                          # MCP coverage + conflicts (alias: doctor)
+# no `mcp add` — syncthis mirrors MCP servers, it doesn't install them
+
+syncthis doctor                              # MCP coverage + conflicts
+syncthis update [--dry-run]                  # update syncthis itself
+syncthis help                                # noun-first overview
+```
+
+**Bare-noun behavior (KTD-3):** to stay non-breaking, bare `syncthis mcp` and bare `syncthis skills` keep their legacy side effects (union sync / `npx skills update`), while help advertises the explicit `mcp sync` / `skills update`. Bare `syncthis plugins` has no destructive legacy behavior, so it prints the plugins group help.
+
+**Legacy aliases (still work, not advertised):** `run` (=`sync`), `mcp`/`mcp --dry-run` (=`mcp sync`), `doctor` (=`mcp doctor`), `mirror <primary>` (=`plugins mirror`), `from <agent> --all` (=`mcp from`), `<from> <to>` (=`mcp <from> <to>`), `add skill|plugin` (=`skills add` / `plugins add`), `rm mcp|skill|plugin` and bare `rm <server> --all` (=`mcp rm` etc.), `plugin list`/`plugin rm` (=`plugins list`/`plugins rm`; bare `plugin` still lists). Routing + alias equivalence is pinned by `tests/cli-routing.test.ts`. The noun routers (`cmdPlugins`/`cmdMcpGroup`/`cmdSkills`) in `bin/syncthis.ts` delegate to the same handler functions the aliases use — no behavior is duplicated.
 
 `run`/`sync` does, in order: read all 12 agent configs (for Claude, merging top-level + every per-project scope) → compute union (any server present in any agent propagates to every agent) → detect conflicts → write back where safe → (unless `--no-skills`) surface plugin-bundled skills to the non-plugin agents (the skill cohort, which also includes skills-only agents like Pi) via `npx skills add`, then run `npx skills update -y`. The skills passes are additive only. Plugin/cursor propagation is **not** part of `run` — it stays explicit in `mirror`.
 

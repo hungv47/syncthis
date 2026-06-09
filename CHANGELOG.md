@@ -2,6 +2,28 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.15.0] — 2026-06-09
+
+Includes everything in 0.14.1 (cross-agent plugin/skill identity hardening), which was never published on its own.
+
+### Added
+- **Noun-first CLI grammar.** Three nouns — `plugins`, `skills`, `mcp` — each with scoped verbs (`plugins list|mirror|add|rm`, `skills update|add|from-plugins|rm`, `mcp sync|doctor|from|rm`, plus directional `mcp <from> <to>`), alongside the flagship `sync`. This is now the canonical, advertised surface (`syncthis help`, `syncthis <noun> help`). The change is **additive and non-breaking**: every pre-0.15 command still works as an unadvertised alias routing to the same handler (`run`, bare `mcp`, `doctor`, `mirror`, `from`, `<from> <to>`, `add`/`rm <skill|plugin|mcp>`, `plugin list`/`plugin rm`). Bare-noun behavior preserves legacy side effects (`mcp` → union sync, `skills` → update) while help advertises the explicit verbs; bare `plugins` prints group help. A collision guard in `cmdMcp` keeps a future agent id from being shadowed by a verb name. Routing + alias equivalence is pinned by `tests/cli-routing.test.ts`.
+- **Reproducible terminal demos.** VHS tapes (`docs/demos/tapes/`) render the GIFs embedded in the README from a sandboxed fixture-`$HOME` harness (`docs/demos/seed-fixtures.ts`, `docs/demos/build.sh`): pure-file MCP flows are recorded live (showing real mutations + the `.syncthis.bak` backup), shell-out plugin/skills flows as dry-run/preview, so no external CLIs are needed and the output is deterministic.
+
+### Changed
+- **Inline TUI walk-through guidance.** The interactive picker now renders breadcrumb headers and inline affordances via the existing `note()`/`tui-style` helpers (no new mode, no new runtime deps), so each flow shows where you are in source → items → destinations → preview → confirm.
+
+## [0.14.1] — 2026-06-09
+
+### Fixed
+- **Cross-agent plugin identity now survives URL-derived name sanitization.** Claude reports a repo-sourced plugin as `github.com-owner-repo`, while Codex stores the same repo as `github-com-owner-repo`. The mirror diff, Codex install/uninstall matching, plugin-uninstall record matching, and installed-repo coverage all keyed on the raw spelling, so the same plugin looked like two — `mirror` queued spurious re-adds and `plugin rm` could miss an instance. A new `pluginIdentityKeys`/`pluginNamesOverlap` pair (`src/plugins/shell.ts`) treats the two spellings as one identity for diff/coverage while preserving each agent's own stored name for the actual install/uninstall command.
+- **Skill sync to Kimi no longer rejects the whole invocation.** Syncthis' agent id is `kimi-cli`, but `vercel-labs/skills` names the same target `kimi-code-cli`; passing the syncthis id made the upstream CLI reject the entire multi-agent add/remove. A new `skillAgentIdToCliId` translates only at the process boundary (`addArgs`/`installedAddArgs`/`removeArgs`), keeping syncthis' public agent id stable. The `kimi code cli` label is also recognized on read.
+- **`skills list` JSON read hardened.** Installed-skill enumeration now streams `npx skills list -g --json` into a `0600` temp file (fd-redirected, `NO_COLOR`/`FORCE_COLOR` forced, 60s timeout) instead of capturing stdout, avoiding color/banner output corrupting the JSON, and deduplicates the per-skill agent list.
+- **Antigravity skill targets no longer conflated** with another agent during skill surfacing.
+
+### Changed
+- **`add plugin` preview is accurate.** Dry-run now runs the real `installPlugin({ dryRun })` resolver per plugin instead of a hardcoded "would install" line, and `pluginAddHasWork` reflects the actual planned installs / cursor pushes / skills / MCP work.
+
 ## [0.14.0] — 2026-06-05
 
 ### Changed

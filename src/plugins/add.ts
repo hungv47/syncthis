@@ -105,14 +105,20 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   if (!opts.apply) {
     // Preview: resolve what WOULD happen without shelling out.
     if (wantCodex) {
-      const codex = pluginAdapters.find((a) => a.id === "codex")!;
-      for (const p of chosen) {
-        base.installs.push(await codex.installPlugin(p.name, {
-          dryRun: true,
-          provision,
-          sourceRepo: repoOf(p),
-          sourceClonePath: cloneOf(p),
-        }));
+      const codex = pluginAdapters.find((a) => a.id === "codex");
+      if (!codex) {
+        for (const p of chosen) {
+          base.installs.push({ agent: "codex", target: p.name, status: "skipped", message: "no Codex plugin adapter" });
+        }
+      } else {
+        for (const p of chosen) {
+          base.installs.push(await codex.installPlugin(p.name, {
+            dryRun: true,
+            provision,
+            sourceRepo: repoOf(p),
+            sourceClonePath: cloneOf(p),
+          }));
+        }
       }
     }
     if (wantCursor) base.cursor = { repos: chosenRepos, results: [] };
@@ -154,14 +160,21 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
 
   // Codex native installs (installPlugin handles provision / covered / fallback).
   if (wantCodex) {
-    const codex = pluginAdapters.find((a) => a.id === "codex")!;
-    for (const p of chosen) {
-      tick(`codex: ${p.name}`);
-      const res = await codex.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p), sourceClonePath: cloneOf(p) });
-      base.installs.push(res);
-      // A bundle Codex can't load as a plugin → add its skills to Codex.
-      if (res.skillsFallbackRepo) {
-        base.skills.push(...(await addSkillRepos([res.skillsFallbackRepo], ["codex"])));
+    const codex = pluginAdapters.find((a) => a.id === "codex");
+    if (!codex) {
+      for (const p of chosen) {
+        tick(`codex: ${p.name}`);
+        base.installs.push({ agent: "codex", target: p.name, status: "skipped", message: "no Codex plugin adapter" });
+      }
+    } else {
+      for (const p of chosen) {
+        tick(`codex: ${p.name}`);
+        const res = await codex.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p), sourceClonePath: cloneOf(p) });
+        base.installs.push(res);
+        // A bundle Codex can't load as a plugin → add its skills to Codex.
+        if (res.skillsFallbackRepo) {
+          base.skills.push(...(await addSkillRepos([res.skillsFallbackRepo], ["codex"])));
+        }
       }
     }
   }
