@@ -2,6 +2,17 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.15.0] — 2026-06-09
+
+Includes everything in 0.14.1 (cross-agent plugin/skill identity hardening), which was never published on its own.
+
+### Added
+- **Noun-first CLI grammar.** Three nouns — `plugins`, `skills`, `mcp` — each with scoped verbs (`plugins list|mirror|add|rm`, `skills update|add|from-plugins|rm`, `mcp sync|doctor|from|rm`, plus directional `mcp <from> <to>`), alongside the flagship `sync`. This is now the canonical, advertised surface (`syncthis help`, `syncthis <noun> help`). The change is **additive and non-breaking**: every pre-0.15 command still works as an unadvertised alias routing to the same handler (`run`, bare `mcp`, `doctor`, `mirror`, `from`, `<from> <to>`, `add`/`rm <skill|plugin|mcp>`, `plugin list`/`plugin rm`). Bare-noun behavior preserves legacy side effects (`mcp` → union sync, `skills` → update) while help advertises the explicit verbs; bare `plugins` prints group help. A collision guard in `cmdMcp` keeps a future agent id from being shadowed by a verb name. Routing + alias equivalence is pinned by `tests/cli-routing.test.ts`.
+- **Reproducible terminal demos.** VHS tapes (`docs/demos/tapes/`) render the GIFs embedded in the README from a sandboxed fixture-`$HOME` harness (`docs/demos/seed-fixtures.ts`, `docs/demos/build.sh`): pure-file MCP flows are recorded live (showing real mutations + the `.syncthis.bak` backup), shell-out plugin/skills flows as dry-run/preview, so no external CLIs are needed and the output is deterministic.
+
+### Changed
+- **Inline TUI walk-through guidance.** The interactive picker now renders breadcrumb headers and inline affordances via the existing `note()`/`tui-style` helpers (no new mode, no new runtime deps), so each flow shows where you are in source → items → destinations → preview → confirm.
+
 ## [0.14.1] — 2026-06-09
 
 ### Fixed

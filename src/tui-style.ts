@@ -38,7 +38,14 @@ export const S = {
   group: pick("◈", "+"),
   up: pick("↑", "^"),
   down: pick("↓", "v"),
+  crumb: pick("›", ">"),
 };
+
+// A breadcrumb trail for the interactive flows, e.g. "Plugins › Mirror › choose source".
+// Lets each step show where the user is in the source → items → destinations → confirm walk.
+export function breadcrumb(parts: string[]): string {
+  return parts.filter(Boolean).join(` ${S.crumb} `);
+}
 
 const colorOn =
   !("NO_COLOR" in process.env) && process.env.TERM !== "dumb" && Boolean(process.stdout.isTTY);
