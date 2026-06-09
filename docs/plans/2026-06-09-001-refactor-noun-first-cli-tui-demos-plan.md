@@ -130,8 +130,9 @@ and CLAUDE.md so it's intentional, not surprising.
 **KTD-4 — Verb dispatch must not shadow directional agent IDs.** Inside `cmd mcp`, a first
 positional that matches a known verb (`sync`, `doctor`, `from`, `rm`, `help`) is treated as
 a verb; otherwise it falls through to the directional `<from> <to>` parse (two agent IDs).
-No agent ID collides with those verb names today; add a guard/test so a future agent named
-`sync`/`from`/`rm` can't be silently swallowed.
+No agent ID collides with those verb names today; `cmdMcp` implements the guard (a first
+positional that is a valid agent ID defers to directional parsing) and U6 tests the behavior,
+so a future agent named `sync`/`from`/`rm` can't be silently swallowed.
 
 **KTD-5 — Demos run against a fixture `$HOME`; pure-file flows are recorded live, shell-out
 flows are recorded as preview/dry-run.** `src/io.ts` resolves every path from
@@ -241,6 +242,9 @@ tests/
   / union-sync / `cmdDoctor` / `cmdFanOut` / `cmdRmMcp` / `cmdDirectional`.
 - In `cmdMcp`: dispatch known verbs (`sync`, `doctor`, `from`, `rm`, `help`); otherwise fall
   through to the directional two-positional parse; bare (no args) → legacy union sync (KTD-3).
+  The collision-guard for KTD-4 lives here: before treating a first positional as a verb,
+  `cmdMcp` checks it against the known verb set, and if the token is a valid agent ID it
+  defers to the directional parse rather than swallowing it as a verb.
 - In `main()`: insert `if (cmd === "plugins") return cmdPlugins(rest)` etc. **above** the
   existing branches, but keep all legacy branches (`mirror`, `from`, `add`, `rm`, `remove`,
   `plugin`, bare `mcp`, `<from> <to>`) intact as hidden aliases.
