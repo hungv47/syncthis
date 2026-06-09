@@ -2,6 +2,17 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.14.1] — 2026-06-09
+
+### Fixed
+- **Cross-agent plugin identity now survives URL-derived name sanitization.** Claude reports a repo-sourced plugin as `github.com-owner-repo`, while Codex stores the same repo as `github-com-owner-repo`. The mirror diff, Codex install/uninstall matching, plugin-uninstall record matching, and installed-repo coverage all keyed on the raw spelling, so the same plugin looked like two — `mirror` queued spurious re-adds and `plugin rm` could miss an instance. A new `pluginIdentityKeys`/`pluginNamesOverlap` pair (`src/plugins/shell.ts`) treats the two spellings as one identity for diff/coverage while preserving each agent's own stored name for the actual install/uninstall command.
+- **Skill sync to Kimi no longer rejects the whole invocation.** Syncthis' agent id is `kimi-cli`, but `vercel-labs/skills` names the same target `kimi-code-cli`; passing the syncthis id made the upstream CLI reject the entire multi-agent add/remove. A new `skillAgentIdToCliId` translates only at the process boundary (`addArgs`/`installedAddArgs`/`removeArgs`), keeping syncthis' public agent id stable. The `kimi code cli` label is also recognized on read.
+- **`skills list` JSON read hardened.** Installed-skill enumeration now streams `npx skills list -g --json` into a `0600` temp file (fd-redirected, `NO_COLOR`/`FORCE_COLOR` forced, 60s timeout) instead of capturing stdout, avoiding color/banner output corrupting the JSON, and deduplicates the per-skill agent list.
+- **Antigravity skill targets no longer conflated** with another agent during skill surfacing.
+
+### Changed
+- **`add plugin` preview is accurate.** Dry-run now runs the real `installPlugin({ dryRun })` resolver per plugin instead of a hardcoded "would install" line, and `pluginAddHasWork` reflects the actual planned installs / cursor pushes / skills / MCP work.
+
 ## [0.14.0] — 2026-06-05
 
 ### Changed
