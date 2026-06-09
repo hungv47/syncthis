@@ -40,7 +40,7 @@ interface CommandRow {
 // Descriptions are kept short on purpose: the row is `$ ` + a fixed-width command
 // column + the description, all in one Ink flex row, so a long description wraps
 // (and garbles) on an 80-col terminal. Keep each desc within ~43 chars.
-const COMMANDS: CommandRow[] = [
+export const COMMANDS: CommandRow[] = [
   { cmd: "syncthis sync", desc: "share MCP + skills with every agent" },
   { cmd: "syncthis plugins add <name> --all", desc: "push plugin content to agents" },
   { cmd: "syncthis mcp sync", desc: "MCP servers only (skip skills)" },
