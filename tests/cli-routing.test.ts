@@ -117,3 +117,48 @@ describe("verb / directional disambiguation (KTD-4)", () => {
     expect(r.out).toContain("server name(s) across");
   });
 });
+
+describe("add — auto-detect type (U3)", () => {
+  test("top-level help advertises `syncthis add`", () => {
+    expect(run(["help"]).out).toContain("syncthis add");
+  });
+
+  test("`add help` documents auto-detection", () => {
+    const r = run(["add", "help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("type auto-detected");
+  });
+
+  test("bare `add` (no source) errors with guidance", () => {
+    const r = run(["add"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("name what to add");
+  });
+
+  test("invalid --as is rejected", () => {
+    const r = run(["add", "foo", "--as", "bogus", "--all"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("--as must be one of");
+  });
+
+  test("--as mcp (a bare name) is refused — syncthis doesn't install MCP servers", () => {
+    const r = run(["add", "some-server", "--as", "mcp", "--all"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("doesn't install them");
+  });
+
+  test("explicit `add mcp` still refused", () => {
+    const r = run(["add", "mcp", "some-server", "--all"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("add mcp");
+  });
+
+  test("owner/repo auto-detects to skill (then enforces scope, no shell-out)", () => {
+    // A slash → skill needs no Claude lookup; cmdAddSkill validates the slug, then the
+    // missing --all/--agents scope errors before anything is shelled out.
+    const r = run(["add", "vercel-labs/agent-skills"]);
+    expect(r.out).toContain("detected skill");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("scope");
+  });
+});

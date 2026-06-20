@@ -117,6 +117,9 @@ syncthis mcp rm <server…> --all | --agents <a,b,c> [--yes] [--dry-run]
 syncthis mcp doctor                         # MCP coverage + conflict report (alias: doctor)
 # (no `mcp add` — syncthis mirrors MCP servers, it doesn't install them)
 
+syncthis add <repo|name…> [--as skill|plugin] --all | --agents <a,b,c> [--dry-run]
+                                            # auto-detect: owner/repo → skill; installed plugin name → plugin
+
 syncthis doctor                             # MCP coverage + conflict report
 syncthis update [--dry-run]                 # update syncthis itself to latest
 syncthis version                            # print the installed syncthis version
