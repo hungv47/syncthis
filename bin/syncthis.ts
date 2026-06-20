@@ -30,6 +30,10 @@ usage:
   syncthis mcp     <sync|doctor|from|rm>     manage MCP servers  (syncthis mcp help)
   syncthis mcp <from> <to>                   one-way MCP mirror between two agents
 
+  syncthis add <repo|name…> [--as skill|plugin] --all | --agents <a,b,c>
+                                             add a skill repo or an installed plugin,
+                                             type auto-detected   (syncthis add help)
+
   syncthis doctor                            MCP coverage + conflict report
   syncthis update  [--dry-run]               update syncthis itself to the latest npm version
   syncthis version                           print the installed syncthis version
@@ -136,6 +140,8 @@ const OPTIONS = {
   // `plugin rm` scope + behavior.
   agents: { type: "string" },
   "keep-data": { type: "boolean" },
+  // `add <source>` explicit type override (skip auto-detection).
+  as: { type: "string" },
 } as const;
 
 function parse(argv: string[]) {
@@ -778,18 +784,83 @@ function resolveAgentScope(values: ParsedValues, known: AgentId[], label: string
   process.exit(2);
 }
 
-// `syncthis add <skill|plugin> <items…> --agents <list>|--all` — additive (no confirm;
-// supports --dry-run). MCP has no add (syncthis is a sync layer, not an installer).
+const MCP_NO_ADD = "syncthis mirrors MCP servers, it doesn't install them. Add a server with `claude mcp add`/mcpm, then `syncthis sync`.";
+
+// `syncthis add <items…> --agents <list>|--all` — additive (no confirm; supports
+// --dry-run). The type is named explicitly (`add skill|plugin <items…>`) or auto-detected
+// from the source. MCP has no add (syncthis is a sync layer, not an installer).
 async function cmdAdd(argv: string[]) {
   const noun = argv[0];
+  if (noun === "help" || noun === "-h" || noun === "--help") return void console.log(ADD_HELP);
   if (noun === "skill" || noun === "skills") return cmdAddSkill(argv.slice(1));
   if (noun === "plugin" || noun === "plugins") return cmdAddPlugin(argv.slice(1));
   if (noun === "mcp") {
-    console.error(red("there's no `add mcp` — syncthis mirrors MCP servers, it doesn't install them. Add a server with `claude mcp add`/mcpm, then `syncthis sync`."));
+    console.error(red(`there's no \`add mcp\` — ${MCP_NO_ADD}`));
     process.exit(2);
   }
-  console.error(red(`add: say what to add — \`add skill <repo…>\` or \`add plugin <name…>\` (with --all | --agents <a,b,c>)`));
-  process.exit(2);
+  if (!noun || noun.startsWith("-")) {
+    console.error(red("add: name what to add — `add <owner/repo>` (auto-detected) or `add skill|plugin <items…>` (with --all | --agents <a,b,c>)"));
+    process.exit(2);
+  }
+  // First positional isn't a known noun → treat the positionals as sources and infer
+  // each one's type. `--as skill|plugin|mcp` forces the type.
+  return cmdAddAuto(argv);
+}
+
+const ADD_HELP = `syncthis add — add a skill or plugin to chosen agents (type auto-detected)
+
+  syncthis add <owner/repo…> --all | --agents <a,b,c> [--dry-run]
+                                             a repo slug → treated as a SKILL repo
+  syncthis add <plugin-name…> --all | --agents <a,b,c> [--dry-run]
+                                             a bare name claude-code has installed →
+                                             treated as a PLUGIN and propagated
+  syncthis add <items…> --as skill|plugin    force the type, skip detection
+  syncthis add skill|plugin <items…>         name the type explicitly (same handlers)
+
+  detection: \`owner/repo\` → skill; a bare name claude-code has installed → plugin; any
+  other bare name looks like an MCP server name — ${MCP_NO_ADD} (there is no \`add mcp\`).`;
+
+// Auto-detect path: classify each source (skill / plugin / mcp) and route to the typed
+// handler. Reuses the explicit handlers wholesale (scope parsing, dry-run, printing).
+async function cmdAddAuto(argv: string[]) {
+  const { detectAddType, isAddType, needsInstalledPlugins } = await import("../src/plugins/detect.ts");
+  const { values, positionals } = parse(argv);
+  const as = typeof values.as === "string" ? values.as : undefined;
+  if (as !== undefined && !isAddType(as)) {
+    console.error(red(`add: --as must be one of skill, plugin, mcp (got \`${as}\`)`));
+    process.exit(2);
+  }
+  if (positionals.some((p) => p.trim() === "")) {
+    console.error(red(`add: empty source — pass a repo (owner/repo), an installed plugin name, or use \`--as skill|plugin\`.`));
+    process.exit(2);
+  }
+  // Read claude-code's installed plugins only if a bare-name source actually needs it.
+  let installed: ReadonlySet<string> | undefined;
+  if (positionals.some((p) => needsInstalledPlugins(p, as))) {
+    const { claudePluginAdapter } = await import("../src/plugins/claude.ts");
+    const read = await claudePluginAdapter.read();
+    installed = new Set(read.error ? [] : read.plugins.map((p) => p.name));
+  }
+  const typed = positionals.map((source) => ({ source, type: detectAddType(source, { as, installedPluginNames: installed }) }));
+
+  // MCP-typed sources can't be added — surface them rather than silently dropping.
+  const mcp = typed.filter((t) => t.type === "mcp").map((t) => t.source);
+  if (mcp.length) {
+    const looks = mcp.length > 1 ? "look like MCP server names" : "looks like an MCP server name";
+    console.error(red(`add: ${mcp.join(", ")} ${looks} — ${MCP_NO_ADD} (pass \`--as skill|plugin\` if it's a repo or installed plugin).`));
+    process.exit(2);
+  }
+
+  const kinds = new Set(typed.map((t) => t.type));
+  if (kinds.size > 1) {
+    const summary = typed.map((t) => `${t.source}=${t.type}`).join(", ");
+    console.error(red(`add: mixed source types (${summary}). Run them in separate \`add\` commands, or pass \`--as skill|plugin\` to force one type.`));
+    process.exit(2);
+  }
+  const type = [...kinds][0] as "skill" | "plugin"; // mcp already handled above
+  console.log(dim(`add: detected ${type}${as ? " (--as)" : ""} → ${positionals.join(", ")}`));
+  // Forward the original argv (sources as positionals, flags intact) to the typed handler.
+  return type === "skill" ? cmdAddSkill(argv) : cmdAddPlugin(argv);
 }
 
 async function cmdAddSkill(argv: string[]) {
