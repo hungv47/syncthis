@@ -8,13 +8,15 @@
 
 ![syncthis mcp sync — union MCP servers across every agent](./docs/demos/out/mcp-sync.gif)
 
-**One CLI to keep MCP servers in sync across your AI coding agents — plus plugin and skills propagation.**
+**Install a plugin once on Claude — syncthis propagates its skills and MCP servers to every other agent. Plus cross-agent MCP and skills sync.**
 
-Every coding agent stores its MCP servers in its own file, its own format, its own path. Add a server to Claude Code and the other eleven don't know it exists — so you wire up the same server, by hand, again and again. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.** Nothing else does cross-agent MCP sync — that's why it exists.
+A Claude Code plugin bundles skills, MCP servers, and more — but only Claude and Codex can install one; the other ten agents are left out. syncthis decomposes a plugin and lifts its skills and MCP servers into every other agent's own config, by the best mechanism each supports: **one install on Claude, reachable everywhere — the only tool that understands plugin bundles.**
+
+It does the same for raw MCP servers. Every coding agent stores them in its own file, its own format, its own path, so a server added to Claude Code is invisible to the other eleven. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.**
 
 You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
 
-- **MCP servers** — union sync across all 12 agents: read every agent's config, compute the union, write it back, report conflicts. *(Nothing upstream does cross-agent MCP sync — this is syncthis's reason to exist.)*
+- **MCP servers** — union sync across all 12 agents: read every agent's config, compute the union, write it back, report conflicts.
 - **Plugins** — add one, a few, or all Claude-installed plugins to chosen agents, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills. `mirror` remains as a batch shortcut for every installed plugin.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
