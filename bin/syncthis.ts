@@ -830,6 +830,10 @@ async function cmdAddAuto(argv: string[]) {
     console.error(red(`add: --as must be one of skill, plugin, mcp (got \`${as}\`)`));
     process.exit(2);
   }
+  if (positionals.some((p) => p.trim() === "")) {
+    console.error(red(`add: empty source — pass a repo (owner/repo), an installed plugin name, or use \`--as skill|plugin\`.`));
+    process.exit(2);
+  }
   // Read claude-code's installed plugins only if a bare-name source actually needs it.
   let installed: ReadonlySet<string> | undefined;
   if (positionals.some((p) => needsInstalledPlugins(p, as))) {
